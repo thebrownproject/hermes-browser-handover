@@ -22,7 +22,7 @@ import hbh.lease
 import hbh.server
 from hbh.binding import SessionBinding
 from hbh.config import ViewerConfig
-from hbh.handover import HandoverManager, Refused
+from hbh.handover import TERMINAL_STATES, HandoverManager, Refused
 from hbh.lease import FileLease
 from hbh.service import Service
 
@@ -406,6 +406,113 @@ class ChromiumSuite(unittest.TestCase):
         self.env.start_service()
         status = self.env.status(hid)
         self.assertEqual((status["state"], status["controller"]), ("human_disconnected", "human"))
+
+
+    # ── 10. (round 6) a detached viewer is closed by its designated closer ───
+
+    def test_terminal_close_is_delivered_when_the_session_returns_during_expiry(self):
+        """CI race from round 5: sweep's ``_finish`` detaches the viewer and then awaits the terminal
+        state message; if the session task returns meanwhile (a pending message makes it observe
+        ``record.viewer is not link``), websockets closes the socket with a bare 1000 before
+        ``closed: expired`` is sent. The session must wait for the closer. Deterministic: the terminal
+        state message is held until the session task has actually returned."""
+        from hbh.handover import LINK_TTL
+        hid = self.prepared()["handover_id"]
+        manager = self.env.service.manager
+        real_state_message, real_session = manager._state_message, manager._viewer_session
+        detached, returned = threading.Event(), {}
+
+        async def session_wrapper(record, link):
+            returned["event"] = asyncio.Event()
+            try:
+                return await real_session(record, link)
+            finally:
+                returned["event"].set()
+
+        async def held_state_message(record, view=None):
+            if record.state in TERMINAL_STATES and "event" in returned:
+                self.assertIsNone(record.viewer)           # the closer detached before any await
+                detached.set()
+                await asyncio.wait_for(returned["event"].wait(), 10)
+            return await real_state_message(record, view)
+
+        manager._viewer_session, manager._state_message = session_wrapper, held_state_message
+
+        async def go():
+            viewer = await self.controlling(hid)
+            state = await viewer.release()
+            self.assertEqual((state["state"], state["cycles"]), ("viewing", 1))
+            self.now[0] += LINK_TTL + 5                    # renewed window lapses while the agent holds
+            sweep = asyncio.run_coroutine_threadsafe(manager.sweep(), self.env.service._loop)
+            self.assertTrue(await asyncio.to_thread(detached.wait, 10), "sweep did not detach the viewer")
+            await viewer.send({"type": "ping"})            # forces the session loop's early return
+            closed = await viewer.wait_for("closed", timeout=15)
+            self.assertEqual(closed["reason"], "expired")
+            await asyncio.wait_for(viewer.ws.wait_closed(), 10)
+            self.assertEqual((viewer.ws.close_code, viewer.ws.close_reason), (1000, "expired"))
+            await asyncio.to_thread(sweep.result, 15)      # the closer finished; nothing hangs
+        run(go())
+        status = self.env.status(hid)
+        self.assertEqual((status["state"], status["cycles"], status["agent_may_continue"], status["human_connected"]),
+                         ("expired", 1, True, False))
+        self.assertFalse(self.env.lease.get().human)
+        self.assertNotIn("was not closed in time", "\n".join(self.logs.lines))
+
+    def test_takeover_behind_a_coalesced_lease_read_is_refused_as_another_viewer(self):
+        """CI failure from round 5: a ``fresh`` lease read joins a read already in flight, so the
+        finish/release pre-check can see the pre-takeover view. The hand back then re-reads and
+        must refuse with the same classification as the pre-check, leaving the other controller's
+        lease untouched. Deterministic: the in-flight read is gated after it has read the file."""
+        hid = self.prepared()["handover_id"]
+        manager = self.env.service.manager
+        lease, real_get = self.env.lease, self.env.lease.get
+        reading, gate = threading.Event(), threading.Event()
+
+        def gated_get():
+            view = real_get()
+            if not gate.is_set():
+                reading.set()
+                gate.wait(10)
+            return view
+
+        async def go():
+            viewer = await self.controlling(hid)
+            lease.get = gated_get
+            try:
+                stale = asyncio.run_coroutine_threadsafe(manager.lease_view(fresh=True), self.env.service._loop)
+                self.assertTrue(await asyncio.to_thread(reading.wait, 10))
+                taken = lease.evict_with("desktop-viewer")         # read in flight predates this
+                real_request = manager._finish_request
+
+                async def finish_then_open_gate(record, link):
+                    # The gate opens only after the request has coalesced with the stale read.
+                    asyncio.get_running_loop().call_soon(gate.set)
+                    return await real_request(record, link)
+                manager._finish_request = finish_then_open_gate
+                await viewer.send({"type": "finish"})
+                error = await viewer.wait_for("error")
+                ours = self.env.call(lambda m: _viewer_id(m, hid))
+                self.assertEqual(stale.result(10).viewer_id, ours, "the coalesced read returned the pre-takeover view")
+            finally:
+                gate.set()
+                lease.get = real_get
+            self.assertIn("Another viewer", error["message"])
+            current = lease.get()
+            self.assertEqual((current.human, current.viewer_id, current.epoch), (True, "desktop-viewer", taken.epoch))
+            await viewer.send({"type": "release"})
+            error = await viewer.wait_for("error")
+            self.assertIn("Another viewer", error["message"])
+            status = self.env.status(hid)
+            self.assertEqual((status["state"], status["controller"], status["agent_may_continue"]),
+                             ("superseded", "human_other", False))
+            await viewer.close()
+        run(go())
+        current = self.env.lease.get()
+        self.assertEqual((current.human, current.viewer_id), (True, "desktop-viewer"))
+
+
+async def _viewer_id(manager, hid):
+    return manager.records[hid].viewer_id
 
 
 class LifecycleSuite(unittest.TestCase):

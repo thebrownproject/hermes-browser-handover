@@ -48,10 +48,11 @@ cd tests
 ../.venv/bin/python -W ignore -m unittest test_units test_viewer test_browser_ui test_regressions -v
 ```
 
-The 52 tests cover authentication, CSRF and tickets, ownership and expiry,
+The 54 tests cover authentication, CSRF and tickets, ownership and expiry,
 concurrent creation, reconnect/restart, target binding, persistence failures,
 real browser input, viewport restoration, repeated take/release cycles with fresh
-lease epochs, Finish session from every state, and the actual viewer JavaScript.
+lease epochs, Finish session from every state, terminal close delivery when the
+link is ended by another task, and the actual viewer JavaScript.
 They use temporary synthetic profiles, never a live Hermes profile. CI runs these
 checks on Ubuntu 24.04 with its installed Chrome. Runtime adapters need the
 separate Hermes smoke check in the installation guide.

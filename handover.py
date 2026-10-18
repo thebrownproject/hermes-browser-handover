@@ -40,6 +40,7 @@ LEASE_CACHE_S = 0.25
 CONTROL_RECHECK_S = 1.0
 HELLO_TIMEOUT_S = 5
 SEND_TIMEOUT_S = 6
+CLOSE_WAIT_S = 20              # a detached viewer's session waits this long for its designated closer
 MAX_NOTICES = 5
 MAX_PURPOSE = 160
 ACTIVE_STATES = ("prepared", "viewing", "human", "human_disconnected", "target_lost", "superseded")
@@ -135,6 +136,10 @@ class ViewerLink:
         self.id = secrets.token_hex(8)
         self._frame_lock = asyncio.Lock()
         self.closed = False
+        # Set only once close() has queued its code/reason and finished (or given up on) the
+        # socket close, so a session task waiting on it can never let the server's default
+        # 1000 close overtake the designated closer's terminal message.
+        self.done = asyncio.Event()
 
     async def send_json(self, payload: dict) -> bool:
         if self.closed:
@@ -165,6 +170,16 @@ class ViewerLink:
             await asyncio.wait_for(self.ws.close(code, reason[:120]), 3)
         except Exception:
             pass
+        finally:
+            self.done.set()
+
+    async def wait_closed(self, timeout=CLOSE_WAIT_S) -> bool:
+        """Wait for whoever detached this link to finish closing it. Bounded; never raises."""
+        try:
+            await asyncio.wait_for(self.done.wait(), timeout)
+            return True
+        except (asyncio.TimeoutError, TimeoutError):
+            return False
 
 
 class HandoverManager:
@@ -196,7 +211,7 @@ class HandoverManager:
         if not fresh and view is not None and now - cached_at < LEASE_CACHE_S:
             return view
         # Concurrent fresh readers (frames, heartbeat, input) share one in-flight read.
-        if self._lease_inflight is not None:
+        if self._lease_inflight is not None and not self._lease_inflight.done():
             return await asyncio.shield(self._lease_inflight)
         self._lease_inflight = asyncio.ensure_future(asyncio.to_thread(self.lease.get))
         try:
@@ -331,8 +346,10 @@ class HandoverManager:
                 # session task then skips its own cleanup and the shutdown path owns it.
                 viewer, record.viewer = record.viewer, None
                 if viewer:
-                    await viewer.send_json({"type": "closed", "reason": "viewer_restarting"})
-                    await viewer.close(1001, "viewer restarting")
+                    try:
+                        await viewer.send_json({"type": "closed", "reason": "viewer_restarting"})
+                    finally:
+                        await viewer.close(1001, "viewer restarting")   # detached here, so closed here
                     await self._on_viewer_gone(record)        # human -> human_disconnected, input released
                 elif record.state == "human":
                     record.transition("human_disconnected", self.clock)
@@ -356,16 +373,23 @@ class HandoverManager:
 
     async def _finish(self, record: Record, state: str):
         """Terminal transition. The state change and persistence come first, without an await, so
-        a tool status read that races the socket close never sees the pre-terminal state."""
+        a tool status read that races the socket close never sees the pre-terminal state.
+        Detaching the viewer makes this call its designated closer: the session task that owns
+        the socket waits for ``ViewerLink.done`` instead of returning and letting the server
+        close the socket (code 1000, no reason) before the terminal message is sent."""
         record.transition(state, self.clock)
         record.expires_at = None
         self._persist_quiet()
         viewer, record.viewer = record.viewer, None
-        if viewer:
-            await viewer.send_json(await self._state_message(record))
-            await viewer.send_json({"type": "closed", "reason": state})
-            await viewer.close(1000, state)
-        await self._drop_cdp(record)
+        try:
+            if viewer:
+                try:
+                    await viewer.send_json(await self._state_message(record))
+                    await viewer.send_json({"type": "closed", "reason": state})
+                finally:
+                    await viewer.close(1000, state)
+        finally:
+            await self._drop_cdp(record)
 
     # ── agent tools ──────────────────────────────────────────────────────────
 
@@ -570,8 +594,15 @@ class HandoverManager:
             return
         if record.viewer:
             previous, record.viewer = record.viewer, None
-            await previous.send_json({"type": "closed", "reason": "replaced"})
-            await previous.close(1000, "replaced")
+            try:
+                await previous.send_json({"type": "closed", "reason": "replaced"})
+            finally:
+                await previous.close(1000, "replaced")
+            if record.state not in ACTIVE_STATES:
+                # The record ended while the previous viewer was being closed.
+                await link.send_json({"type": "closed", "reason": "finished"})
+                await link.close(1000, "finished")
+                return
         record.viewer = link
         watcher = asyncio.create_task(self._watch_control(record, link))
         try:
@@ -585,6 +616,12 @@ class HandoverManager:
             if record.viewer is link:
                 record.viewer = None
                 await self._on_viewer_gone(record)
+            elif not await link.wait_closed():
+                # Whoever detached the link (finish, expiry, replacement, unload) owns its close and
+                # must complete it before this handler returns, or websockets closes the socket
+                # itself with a bare 1000 and the viewer never learns why it ended. A closer that
+                # stalls past the bound is logged; the lease is not involved either way.
+                log.warning("handover=%s viewer=%s detached link was not closed in time", record.id, link.id[:8])
 
     async def expire_viewer(self, handover_id: str, ws, reason: str = "session_expired"):
         """The listener's auth re-check failed for this socket: stop frames and input now.
@@ -884,12 +921,30 @@ class HandoverManager:
         await link.send_json(await self._state_message(record, acquired))
         await self._refresh_stream(record, link, acquired)
 
+    async def _hand_back_blocked(self, record: Record, link: ViewerLink) -> bool:
+        """Fresh ownership read immediately before touching the lease. The caller's earlier read may
+        have been coalesced with one that started before a takeover, so the refusal is classified
+        here exactly as the callers classify it: another viewer, the agent (hand back already
+        happened outside the viewer: the record ends as ``returned``), or our viewer id under a
+        newer epoch (a stale record must never release the current hold)."""
+        view = await self.lease_view(fresh=True)
+        if self.our_control(record, view):
+            return False
+        if not view.human:
+            record.released_by = record.released_by or "external"
+            record.viewport_restored = False if record.viewport_restored is None else record.viewport_restored
+            await self._finish(record, "returned")
+        elif view.viewer_id != record.viewer_id:
+            await link.send_json({"type": "error", "message": "Another viewer holds control; they must hand back."})
+        else:
+            await link.send_json({"type": "error", "message": "Browser control changed; hand back from the current controller."})
+        return True
+
     async def _hand_back(self, record: Record, link: ViewerLink) -> bool:
         """Release THIS handover's native lease after restoring the page. Returns True when the
         agent holds afterwards. Precondition (caller checked): the lease shows our viewer id.
         On failure the held state and the fence are kept and the viewer is told."""
-        if not self.our_control(record, await self.lease_view(fresh=True)):
-            await link.send_json({"type": "error", "message": "Browser control changed; hand back from the current controller."})
+        if await self._hand_back_blocked(record, link):
             return False
         restored = False
         if record.page and not record.page.lost.is_set():
@@ -902,9 +957,9 @@ class HandoverManager:
         record.viewport_restored = restored
         self._invalidate_lease_cache()
         # Layout restoration awaited CDP; never release a newer hold that appeared meanwhile.
-        if not self.our_control(record, await self.lease_view(fresh=True)):
-            record.viewport_restored = None
-            await link.send_json({"type": "error", "message": "Browser control changed; hand back from the current controller."})
+        if await self._hand_back_blocked(record, link):
+            if record.state not in TERMINAL_STATES:
+                record.viewport_restored = None
             return False
         released = await asyncio.to_thread(self.lease.release, record.viewer_id)
         self._lease_cache = (time.monotonic(), released)

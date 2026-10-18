@@ -217,6 +217,13 @@ page back. 0.2.0 changes the lifecycle (handover.py, viewer.py, tool prompt):
   `unload` detaches each viewer before awaiting on it, so a viewer closing during a
   reload cannot be touched twice (previously an intermittent AttributeError on the
   service thread during shutdown).
+- Whoever detaches a viewer owns its close (round 6, see below). `ViewerLink.done` is
+  set in `close()` after the close code and reason have been queued; a session task
+  that finds itself detached by another task (`_finish` from sweep, status, the
+  heartbeat or a frame; `expire_viewer`; replacement; `unload`) waits up to 20 s for
+  that event before returning, so websockets never closes the socket with a bare
+  1000 ahead of the terminal `closed` message. A closer that stalls past the bound is
+  logged by id only and the handler returns; the lease is not involved on any path.
 - Status adds `cycles` and `human_may_retake`; `agent_may_continue` is defined
   above. The tool prompt tells the agent to re-check status before each browser step
   until the handover is finished, cancelled or expired.
@@ -229,6 +236,53 @@ was always persisted for held records). The `returned` terminal state and the
 `closed` reasons `returned`/`replaced`/`viewer_restarting`/`session_expired` are
 unchanged; `finished` and `expired` reasons are new. Agents written for 0.1.1 that
 continue permanently after one `agent_may_continue: true` must be updated to re-check.
+
+## Round 6 CI fixes (18/10/2026, after 91774dd)
+
+CI run 39105023660 (Ubuntu 24.04, full Chrome) failed two `RepeatControlSuite` tests
+that pass locally. Both were real races, not slow-runner artefacts, and both are now
+covered by deterministic regressions in `tests/test_regressions.py` that fail on
+91774dd and pass with the fix:
+
+1. **Terminal `closed` message lost when another task ends the link.** Sweep's
+   `_finish` (expiry) detaches the viewer and then awaits the terminal state message.
+   If the viewer session was still finishing an earlier message (the release just
+   handled, a resize, a ping) it observed `record.viewer is not link` or the terminal
+   state and returned, so the websockets handler returned and the library closed the
+   socket with code 1000 and no reason before `closed: expired` was sent. State and
+   persistence were already correct; only the notification was lost. Fix: close
+   ownership belongs to the detaching task (`ViewerLink.done`, `wait_closed`), the
+   session handler waits for it when detached by someone else, `_finish`, `unload` and
+   replacement close inside `finally`, and `attach_viewer` re-checks the record is
+   still active after awaiting the previous viewer's close. The same viewer session
+   calling `_finish` itself never waits (the close has completed before it returns),
+   and `expire_viewer` is awaited by the server handler, so neither path can deadlock.
+   Test `test_terminal_close_is_delivered_when_the_session_returns_during_expiry`
+   holds the terminal state message until the session task has provably returned,
+   forces that return with a pending ping, and asserts `closed: expired` plus close
+   code 1000 with reason `expired`, no hang, and no "not closed in time" log.
+2. **Refusal classification after a coalesced lease read.** `lease_view(fresh=True)`
+   joins a read already in flight (frames and the heartbeat keep one going), so a
+   finish or release issued right after a Desktop-pane takeover can pass the
+   pre-check on a view read just before the takeover. `_hand_back` then re-read the
+   lease and refused correctly, but with the "control changed" wording meant for a
+   newer epoch under our own viewer id. Fix: `_hand_back_blocked` classifies both
+   fresh re-reads exactly as the pre-check does: another viewer ("Another viewer holds
+   control"), our viewer id under a newer epoch ("Browser control changed"), or the
+   agent (the hand back already happened outside the viewer, so the record ends as
+   `returned` instead of sitting in `human` until the heartbeat notices). No guard was
+   weakened; the lease is never touched on any refusal. `lease_view` also ignores a
+   finished in-flight future. Test
+   `test_takeover_behind_a_coalesced_lease_read_is_refused_as_another_viewer` gates
+   a lease read after it has read the file, takes the lease over underneath it, opens
+   the gate only once the finish request has coalesced with that read, and asserts
+   the refusal wording, the untouched `desktop-viewer` lease and `superseded` status.
+
+Local result (VM102, same command and venv as the 0.2.0 section): 54 tests pass in
+71.2 s; the two new tests fail on 91774dd exactly as CI did (`ConnectionClosedOK`
+received 1000 and the "Browser control changed" wording). Mirrored runtime and test
+files to the homelab project unchanged. Not re-run: the real-browser demo through
+Serve, a real iPhone, any live Hermes profile or payment page.
 
 ## Review fixes (0.1.1, 18/10/2026)
 
