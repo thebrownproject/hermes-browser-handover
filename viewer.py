@@ -8,23 +8,24 @@ MIT, Copyright 2026 T3 Tools Inc. See third_party/NOTICE.md.
 import html
 import json
 
+# Colours follow Hermes's shared Nous preset; no external assets or font requests.
 _STYLE = """
-html,body{height:100%;margin:0;overflow:hidden;background:#0f1419;color:#e6edf3;font:15px -apple-system,system-ui,sans-serif}
-#bar{position:fixed;left:0;right:0;top:0;height:52px;display:flex;align-items:center;gap:10px;padding:0 12px;
- padding-top:env(safe-area-inset-top);box-sizing:content-box;background:#161b22;border-bottom:1px solid #30363d;z-index:3}
-#bar .site{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
-#bar .site small{display:block;color:#8b949e;font-size:12px}
-button{border:0;border-radius:10px;padding:10px 14px;font-size:15px;font-weight:600;color:#fff;background:#1f6feb}
-button.release{background:#b62324}button:disabled{opacity:.45}
-button.finish{background:#30363d;color:#e6edf3;padding:10px 12px}button.finish.arm{background:#8957e5;color:#fff}
-button.finish[hidden]{display:none}
-#stage{position:fixed;left:0;right:0;top:calc(52px + env(safe-area-inset-top));bottom:0;overflow:hidden;background:#0f1419}
+:root{color-scheme:light dark;--bg:#fff;--fg:#1f2328;--panel:#f6f8fa;--muted:#656d76;--line:#d0d7de;--blue:#0053fd;--on-blue:#fff;--soft:#deeaff;--danger:#cf222e;--bar-height:82px}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--panel:#161b22;--muted:#7d8590;--line:#30363d;--blue:#4a84fe;--on-blue:#161616;--soft:#1d2e4f;--danger:#f85149}}
+*{box-sizing:border-box}html,body{height:100%;margin:0;overflow:hidden;background:var(--bg);color:var(--fg);font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+#bar{position:fixed;inset:0 0 auto;height:var(--bar-height);display:grid;grid-template-columns:1fr auto auto;grid-template-rows:20px 40px;align-content:center;align-items:center;gap:4px 8px;padding:0 10px;padding-top:env(safe-area-inset-top);box-sizing:content-box;background:var(--bg);border-bottom:1px solid var(--line);z-index:3}
+#bar .site{display:contents}#site{grid-column:1/-1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:600}#sub{grid-column:1;grid-row:2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#bar .site small{display:block;color:var(--muted);font-size:11px;font-weight:400;margin-top:3px}
+button{flex-shrink:0;border:1px solid transparent;border-radius:8px;padding:10px 11px;min-height:40px;font:600 13px -apple-system,system-ui,sans-serif;color:var(--on-blue);background:var(--blue);white-space:nowrap}
+button.release{background:var(--soft);color:var(--blue);border-color:var(--blue)}button:disabled{opacity:.45}button:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+button.finish{background:var(--panel);color:var(--fg);border-color:var(--line)}button.finish.arm{background:var(--danger);color:#fff}button.finish[hidden]{display:none}
+#stage{position:fixed;left:0;right:0;top:calc(var(--bar-height) + 1px + env(safe-area-inset-top));bottom:0;overflow:hidden;background:var(--panel)}
+#fin{grid-column:2;grid-row:2}#ctl{grid-column:3;grid-row:2}
+@media(min-width:600px){:root{--bar-height:56px}#bar{display:flex}#bar .site{display:block;flex:1;min-width:0}#site{display:block}}
 canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
-#msg{position:fixed;left:12px;right:12px;bottom:calc(14px + env(safe-area-inset-bottom));background:#161b22ee;border:1px solid #30363d;
- border-radius:12px;padding:12px 14px;font-size:14px;line-height:1.4;z-index:4}
-#msg:empty{display:none}
-textarea{position:fixed;left:0;top:0;width:1px;height:1px;padding:0;margin:-1px;border:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;font-size:16px}
-.border-you #stage{outline:3px solid #2ea043;outline-offset:-3px}
+#msg{position:fixed;left:12px;right:12px;bottom:calc(14px + env(safe-area-inset-bottom));background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13px;line-height:1.4;z-index:4;box-shadow:0 4px 16px #0001}
+#msg:empty{display:none}textarea{position:fixed;left:0;top:0;width:1px;height:1px;padding:0;margin:-1px;border:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;font-size:16px}
+.border-you #sub{color:var(--blue)}.finished{padding:32px 20px}.border-you #stage{outline:2px solid var(--blue);outline-offset:-2px}
 """
 
 _SCRIPT = r"""
@@ -70,13 +71,14 @@ _SCRIPT = r"""
     const takeLabel = cycles > 0 ? 'Take control again' : 'Take control';
     document.body.classList.toggle('border-you', controller === 'you');
     site.textContent = state && state.origin ? state.origin.replace(/^https?:\/\//,'') : 'Hermes browser';
-    sub.textContent = cfg.purpose;
+    sub.textContent = controller === 'you' ? 'Your control' : 'Hermes';
+    sub.title = cfg.purpose;
+    site.title = state && state.origin ? state.origin : 'Hermes browser';
     if (controller === 'you') { btn.textContent = 'Release control'; btn.className = 'release'; btn.disabled = false;
-      show(st === 'target_lost' ? 'The page is no longer reachable. Release control or Finish session when you are done.' : ''); }
-    else if (controller === 'other') { btn.textContent = takeLabel; btn.className = ''; btn.disabled = true; show('Someone else is controlling this browser. Wait for them to hand back.'); }
+      show(st === 'target_lost' ? 'Page unavailable. Release control to continue.' : ''); }
+    else if (controller === 'other') { btn.textContent = takeLabel; btn.className = ''; btn.disabled = true; show('Browser in use elsewhere.'); }
     else if (st === 'viewing' || st === 'prepared') { btn.textContent = takeLabel; btn.className = ''; btn.disabled = !(state && state.page_alive);
-      show(cycles > 0 ? 'Handed back to Hermes. Tap Take control again if you need the page, or Finish session when you are done.'
-                      : 'Hermes prepared this page. Tap Take control to continue on your phone, then Release control when you are done.'); }
+      show(''); }
     else { btn.disabled = true; }
     // Finish session: available while this page is active and nobody else holds the browser.
     // Ending it while this handover holds hands back first; ending it while someone else holds is refused.
@@ -98,11 +100,11 @@ _SCRIPT = r"""
     else if (m.type === 'probe') { onProbe(m); }
     else if (m.type === 'error') { show(m.message); }
     else if (m.type === 'closed') { closedForGood = true; controller = 'agent'; disarmFinish(); clearInput(); render();
-      show(m.reason === 'finished' ? 'Session finished. You can close this page.' :
-           m.reason === 'returned' ? 'Handed back to Hermes. This link is closed; ask Hermes for a new one if needed.' :
+      show(m.reason === 'finished' ? 'Session finished.' :
+           m.reason === 'returned' ? 'Handed back to Hermes.' :
            m.reason === 'replaced' ? 'This page was opened somewhere else.' :
            m.reason === 'viewer_restarting' ? 'The viewer restarted. Reopen your link to continue.' :
-           m.reason === 'expired' ? 'This link expired. Ask Hermes for a new link if you still need the page.' :
+           m.reason === 'expired' ? 'Link expired. Ask Hermes for a new one.' :
            'This handover has finished. Ask Hermes for a new link if needed.'); btn.disabled = true; fin.disabled = true; }
   }
   async function connect(){
@@ -160,7 +162,8 @@ _SCRIPT = r"""
     if (cur.end === 'acted' && cur.editable === r.editable) return;
     if (r.editable) input.focus({preventScroll:true}); else input.blur();
   }
-  canvas.addEventListener('pointerdown', ev => {
+  const nativeTouch = 'ontouchstart' in window;
+  const startPointer = ev => {
     if (controller !== 'you' || !ev.isPrimary) return; ev.preventDefault();
     if (ev.pointerType !== 'touch') { const p = pagePoint(ev.clientX, ev.clientY, false); if (!p) return; input.focus({preventScroll:true});
       const cc = countClick(ev); send({type:'mouse', action:'down', x:p.x, y:p.y, button:'left', buttons:1, clickCount:cc, modifiers:0}); return; }
@@ -169,8 +172,8 @@ _SCRIPT = r"""
     const c = probeCache, reuse = c && performance.now()-c.time < PROBE_MS && Math.hypot(ev.clientX-c.clientX, ev.clientY-c.clientY) <= PROBE_PX;
     probe = {x:p.x, y:p.y, clientX:ev.clientX, clientY:ev.clientY, editable: reuse ? c.editable : null, end:'touching'};
     send({type:'probe', x:p.x, y:p.y});
-  });
-  canvas.addEventListener('pointermove', ev => {
+  };
+  const movePointer = ev => {
     if (controller !== 'you') return;
     if (ev.pointerType !== 'touch') { const p = pagePoint(ev.clientX, ev.clientY, true); if (p) send({type:'mouse', action:'move', x:p.x, y:p.y, button: ev.buttons&1 ? 'left':'none', buttons:ev.buttons&7, clickCount:0, modifiers:0}); return; }
     if (!touch || touch.start.pointerId !== ev.pointerId) return;
@@ -179,13 +182,13 @@ _SCRIPT = r"""
     const p = pagePoint(ev.clientX, ev.clientY, true);
     if (p) queueWheel(p, (touch.last.clientX-ev.clientX)*p.scale, (touch.last.clientY-ev.clientY)*p.scale);
     touch.last = ev;
-  });
+  };
   const end = ev => {
     const cancelled = ev.type === 'pointercancel';
     if (ev.pointerType !== 'touch') { const p = pagePoint(ev.clientX, ev.clientY, true); if (p) send({type:'mouse', action:'up', x:p.x, y:p.y, button:'left', buttons:0, clickCount:1, modifiers:0}); return; }
     const t = touch; if (!t || t.start.pointerId !== ev.pointerId) return; touch = null;
     const a = probe;
-    if (cancelled || t.panning) { if (a) a.end = 'panned'; return; }
+    if (cancelled || t.panning) { if (a) a.end = 'panned'; flushWheel(); return; }
     const p = pagePoint(ev.clientX, ev.clientY, false); if (!p) return;
     if (a && a.editable === true) input.focus({preventScroll:true}); else if (a && a.editable === false) input.blur();
     if (a) a.end = a.editable === null ? 'late' : 'acted';
@@ -195,7 +198,32 @@ _SCRIPT = r"""
     send({type:'mouse', action:'down', ...at, button:'left', buttons:1, clickCount:cc});
     send({type:'mouse', action:'up', ...at, button:'left', buttons:0, clickCount:cc});
   };
-  canvas.addEventListener('pointerup', end); canvas.addEventListener('pointercancel', end);
+  // iOS Safari delivers Touch Events reliably during a finger pan. Use one
+  // event family for touch so browsers emitting both cannot double the gesture.
+  const pointer = fn => ev => { if (!(nativeTouch && ev.pointerType === 'touch')) fn(ev); };
+  canvas.addEventListener('pointerdown', pointer(startPointer));
+  canvas.addEventListener('pointermove', pointer(movePointer));
+  canvas.addEventListener('pointerup', pointer(end));
+  canvas.addEventListener('pointercancel', pointer(end));
+  if (nativeTouch) {
+    const finger = (ev, ending) => {
+      const list = ending ? ev.changedTouches : ev.touches;
+      if (!list.length || (!ending && ev.touches.length !== 1)) return null;
+      const t = list[0];
+      return {clientX:t.clientX, clientY:t.clientY, pointerId:t.identifier, pointerType:'touch',
+              isPrimary:true, timeStamp:ev.timeStamp, type:ev.type === 'touchcancel' ? 'pointercancel' : '',
+              preventDefault:() => { if (ev.cancelable) ev.preventDefault(); }};
+    };
+    canvas.addEventListener('touchstart', ev => { const f=finger(ev,false); if(f) startPointer(f); }, {passive:false});
+    canvas.addEventListener('touchmove', ev => {
+      const f=finger(ev,false); if(!f) return;
+      if(controller === 'you' && ev.cancelable) ev.preventDefault();
+      movePointer(f);
+    }, {passive:false});
+    for(const name of ['touchend','touchcancel']) canvas.addEventListener(name, ev => {
+      const f=finger(ev,true); if(f) end(f);
+    }, {passive:false});
+  }
   canvas.addEventListener('wheel', ev => { const p = pagePoint(ev.clientX, ev.clientY, false); if (!p) return; ev.preventDefault();
     const unit = ev.deltaMode === 1 ? 16 : ev.deltaMode === 2 ? (viewport ? viewport.height : 0) : 1; queueWheel(p, ev.deltaX*unit, ev.deltaY*unit); }, {passive:false});
   canvas.addEventListener('contextmenu', ev => ev.preventDefault());
@@ -237,7 +265,7 @@ def viewer_page(info: dict, csrf: str, nonce: str) -> str:
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="referrer" content="no-referrer"><title>Hermes browser</title>
 <style nonce="{nonce}">{_STYLE}</style></head>
-<body><div id="bar"><div class="site"><span id="site">Hermes browser</span><small id="sub">{html.escape(info['purpose'])}</small></div>
+<body><div id="bar"><div class="site"><span id="site">Hermes browser</span><small id="sub">Hermes</small></div>
 <button id="fin" class="finish" hidden disabled>Finish session</button><button id="ctl" disabled>Take control</button></div>
 <div id="stage"><canvas id="cv" role="img" aria-label="Browser page"></canvas></div>
 <textarea id="kb" aria-label="Browser page input" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" disabled></textarea>
@@ -252,8 +280,9 @@ def finished_page(nonce: str, state: str | None) -> str:
             "expired": "This link expired before it was used.", None: "This link is not active."}.get(state,
             "This handover has finished.")
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Hermes browser</title><style nonce="{nonce}">body{{font:17px -apple-system,system-ui;margin:0;padding:32px 20px;background:#0f1419;color:#e6edf3}}</style></head>
-<body><h1 style="font-size:22px">Hermes browser</h1><p>{html.escape(text)} Ask Hermes for a new link if you still need the page.</p></body></html>"""
+<title>Hermes browser</title><style nonce="{nonce}">{_STYLE}</style></head>
+<body><main class="finished"><h1>Hermes</h1><p>{html.escape(text)}</p></main></body></html>"""
+
 
 
 def demo_page(nonce: str = "") -> str:

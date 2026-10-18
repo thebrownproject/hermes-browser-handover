@@ -105,7 +105,7 @@ class BrowserUITests(unittest.TestCase):
                 await phone.wait("window.__hbhView && window.__hbhView.state === 'viewing'")
                 await phone.wait("document.getElementById('cv').width === %d" % PHONE["width"])   # first frame painted
                 self.assertEqual(await phone.eval("window.__errors"), [])
-                self.assertEqual(await phone.eval("document.getElementById('sub').textContent"), "Finish the demo form")
+                self.assertEqual(await phone.eval("document.getElementById('sub').textContent"), "Hermes")
                 self.assertEqual(await phone.eval("document.getElementById('ctl').textContent"), "Take control")
                 self.assertFalse(await phone.eval("document.getElementById('ctl').disabled"))
                 self.assertEqual(await phone.eval("document.getElementById('fin').textContent"), "Finish session")
@@ -148,7 +148,7 @@ class BrowserUITests(unittest.TestCase):
                 self.assertEqual(await phone.eval("document.getElementById('kb').value"), "​", "sentinel restored")
                 # Release from the real button: handed back, link still open, button offers a repeat take
                 await phone.eval("document.getElementById('ctl').click()")
-                await phone.wait("document.getElementById('msg').textContent.indexOf('Handed back') >= 0")
+                await phone.wait("window.__hbhView.controller === 'agent' && window.__hbhView.cycles === 1")
                 self.assertFalse(self.env.lease.get().human)
                 self.assertEqual(await self.probe.eval("innerWidth", target), 1280)
                 await phone.wait("document.getElementById('ctl').textContent === 'Take control again' && !document.getElementById('ctl').disabled")
@@ -188,6 +188,66 @@ class BrowserUITests(unittest.TestCase):
         status = self.env.status(hid)
         self.assertEqual((status["state"], status["cycles"], status["viewport_restored"], status["released_by"]), ("finished", 2, True, "owner"))
         self.assertTrue(status["agent_may_continue"])
+
+    def test_phone_swipe_scrolls_page_and_nested_panel(self):
+        result = self.env.create()
+        target = result['target_id']
+        async def go():
+            phone = PhoneTab(self.env)
+            await phone.open('/h/' + result['handover_id'])
+            try:
+                await phone.wait("window.__hbhView && window.__hbhView.state === 'viewing'")
+                await phone.eval("document.getElementById('ctl').click()")
+                await phone.wait("window.__hbhView.controller === 'you'")
+                await phone.wait("document.getElementById('cv').width === 390")
+                await asyncio.sleep(.4)
+                async def swipe(x, y, distance):
+                    send = lambda m,p: phone.conn.send(m,p,session_id=phone.session)
+                    await send('Input.dispatchTouchEvent',{'type':'touchStart','touchPoints':[{'x':x,'y':y}]})
+                    for i in range(1,9):
+                        await send('Input.dispatchTouchEvent',{'type':'touchMove','touchPoints':[{'x':x,'y':y-distance*i/8}]})
+                        await asyncio.sleep(.03)
+                    await send('Input.dispatchTouchEvent',{'type':'touchEnd','touchPoints':[]})
+                    await asyncio.sleep(.4)
+                await swipe(190,650,280)
+                self.assertGreater(await self.probe.eval('scrollY',target),150,'A real phone swipe must scroll the remote page')
+                # An isolated overflow panel reproduces modal checkout scrolling.
+                await self.probe.eval("document.body.innerHTML='<div id=panel><div id=inside>Scrollable modal</div></div>'; document.styleSheets[0].insertRule('#panel{position:fixed;inset:0;overflow:auto;background:white}');document.styleSheets[0].insertRule('#inside{height:2400px}')",target)
+                self.assertGreater(await self.probe.eval("document.getElementById('panel').scrollHeight-document.getElementById('panel').clientHeight",target),1000)
+                await asyncio.sleep(.3)
+                await swipe(190,650,280)
+                self.assertGreater(await self.probe.eval("document.getElementById('panel').scrollTop",target),150,'Swipe must scroll the inner modal')
+            finally:
+                await phone.close()
+        run(go())
+
+    def test_native_touch_events_scroll_without_clicking(self):
+        result=self.env.create()
+        target=result['target_id']
+        async def go():
+            phone=PhoneTab(self.env)
+            await phone.open('/h/'+result['handover_id'])
+            try:
+                await phone.wait("window.__hbhView && window.__hbhView.state === 'viewing'")
+                await phone.eval("document.getElementById('ctl').click()")
+                await phone.wait("window.__hbhView.controller === 'you' && document.getElementById('cv').width === 390")
+                await phone.eval("""(async()=>{
+                  const c=document.getElementById('cv'),r=c.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height*.8;
+                  function fire(type,yy){const t={identifier:1,target:c,clientX:x,clientY:yy};
+                    const e=new Event(type,{bubbles:true,cancelable:true});
+                    Object.defineProperties(e,{touches:{value:type==='touchend'?[]:[t]},changedTouches:{value:[t]}});c.dispatchEvent(e);}
+                  fire('touchstart',y);
+                  for(let i=1;i<=8;i++){fire('touchmove',y-i*30);await new Promise(r=>setTimeout(r,30));}
+                  fire('touchend',y-240);
+                })()""")
+                deadline=asyncio.get_running_loop().time()+4
+                while (await self.probe.eval('scrollY',target))<150:
+                    if asyncio.get_running_loop().time()>deadline:self.fail('Native touch gesture did not scroll')
+                    await asyncio.sleep(.05)
+                self.assertLess(await self.probe.eval('scrollY',target),360,'One gesture must not be duplicated')
+                self.assertEqual(await self.probe.eval("document.getElementById('out').textContent",target),'')
+            finally:await phone.close()
+        run(go())
 
     def test_phone_page_without_identity_is_refused(self):
         result = self.env.create()

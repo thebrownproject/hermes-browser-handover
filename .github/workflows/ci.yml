@@ -29,3 +29,12 @@ jobs:
       - name: Run synthetic browser, auth and lifecycle tests
         working-directory: tests
         run: python -W ignore -m unittest test_units test_viewer test_browser_ui test_regressions -v
+      - name: Install pinned WebKit acceptance engine
+        run: |
+          npm install --prefix "$RUNNER_TEMP/hbh-webkit" --ignore-scripts playwright-core@1.60.0
+          node "$RUNNER_TEMP/hbh-webkit/node_modules/playwright-core/cli.js" install --with-deps webkit
+      - name: WebKit touch gestures and themes
+        working-directory: tests
+        env:
+          PLAYWRIGHT_CORE: ${{ runner.temp }}/hbh-webkit/node_modules/playwright-core
+        run: python -W ignore -m unittest test_webkit_ui -v

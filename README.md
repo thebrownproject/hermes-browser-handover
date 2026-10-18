@@ -48,7 +48,7 @@ cd tests
 ../.venv/bin/python -W ignore -m unittest test_units test_viewer test_browser_ui test_regressions -v
 ```
 
-The 63 tests cover authentication, CSRF and tickets, ownership and expiry,
+The 65 core tests cover authentication, CSRF and tickets, ownership and expiry,
 concurrent creation, reconnect/restart, target binding, persistence failures,
 real browser input, viewport restoration, repeated take/release cycles with fresh
 lease epochs, Finish session from every state, terminal close delivery when the
@@ -96,3 +96,23 @@ Version0.2.2 accepts Hermes-generated opaque named-session keys in gateway profi
 scope. Those keys include the resolved profile-home path, not a short slug.
 Caller-supplied browser_session names remain strictly validated; task supervision,
 local provenance, registry identity and lease checks remain required.
+
+## Phone touch and UI (0.2.3)
+
+Mobile browsers use one native Touch Events path for finger input; pointer events
+continue to handle mouse/pen. This avoids double-delivery on browsers emitting
+both families. Touch listeners explicitly prevent browser panning while held and
+flush the final wheel delta when a pan ends. Root-page and nested-panel swipes
+are checked against actual remote scroll positions, with a no-accidental-click
+assertion. Physical iPhone acceptance remains separate from simulated events.
+
+Viewer colours follow the shared Hermes Nous light/dark preset. Normal instruction
+overlays are removed; only control status, errors and terminal states remain.
+Merchant origin gets a full-width row on phones; Finish retains two-tap protection.
+
+CI additionally runs WebKit light/dark acceptance with pinned playwright-core1.60.0.
+For a local optional run, install that package and its WebKit browser, set
+PLAYWRIGHT_CORE to its package directory and run `python -m unittest test_webkit_ui`.
+HBH_SCREENSHOT_DIR optionally saves synthetic screenshots outside the repository.
+The WebKit harness uses a loopback synthetic-identity proxy because extra HTTP
+headers are not copied to WebSocket upgrades; it never attaches to a live profile.

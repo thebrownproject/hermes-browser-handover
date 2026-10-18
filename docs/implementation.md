@@ -460,3 +460,19 @@ unchanged. Installed-Hermes smoke now invokes the actual key producer in profile
 scope. Real isolated named browser_exec plus profile override passes through full
 manager.create and produces a synthetic handover link, then cleans up its own
 manager, daemon and screen. No real checkout or live profile is used.
+
+## Native touch and Nous UI (0.2.3, 18/10/2026)
+
+Owner reported iPhone scrolling failure. Chrome's corrected trusted-touch fixture
+scrolls both root and nested panel on the previous implementation, so that alone
+does not reproduce the physical Safari report. WebKit native-touch-event-path
+acceptance fails at remote scrollY0 on the pointer-only viewer and reaches240 with
+the new native Touch Events bridge. The WebKit events are synthetic DOM events;
+this demonstrates the missing input-family path, not a physical iPhone diagnosis.
+Input is still admitted only while this viewer holds the exact native lease.
+Pointer touch events are suppressed when native touch is selected, avoiding duplicate
+scroll/click; mouse/pen retain pointer handling. Final queued deltas flush on pan end.
+
+Light/dark colours follow installed Hermes shared/src/theme-presets.ts Nous palette
+and platform system fonts. Normal prose overlays were removed, with origin/status,
+errors and two-tap Finish retained. No external fonts/assets or security changes.

@@ -61,9 +61,16 @@ class ViewerSuite(unittest.TestCase):
         return viewer
 
     async def element_center(self, target_id, element_id):
-        return await self.probe.eval(
-            "(()=>{const e=document.getElementById(%s);e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();"
-            "return {x:r.x+r.width/2,y:r.y+r.height/2}})()" % json.dumps(element_id), target_id)
+        deadline = asyncio.get_running_loop().time() + 5
+        while asyncio.get_running_loop().time() < deadline:
+            point = await self.probe.eval(
+                "(()=>{const e=document.getElementById(%s);if(!e)return null;"
+                "e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();"
+                "return {x:r.x+r.width/2,y:r.y+r.height/2}})()" % json.dumps(element_id), target_id)
+            if point is not None:
+                return point
+            await asyncio.sleep(0.05)
+        self.fail(f"Fixture element {element_id!r} did not load")
 
     async def tap(self, viewer, point):
         await viewer.send({"type": "probe", "x": point["x"], "y": point["y"]})
