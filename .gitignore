@@ -1,0 +1,38 @@
+# Python and local development
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+node_modules/
+.DS_Store
+
+# Private configuration and runtime artifacts
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+runtime/
+.state/
+logs/
+*.log
+browser-profiles/
+user-data-dir/
+playwright-report/
+test-results/
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+
+# Local authoring and ephemeral artifacts
+.tmp/

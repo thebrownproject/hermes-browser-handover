@@ -1,0 +1,24 @@
+name: Repository checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  whitespace:
+    name: Scaffold whitespace check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Check committed whitespace
+        run: git show --format= --check HEAD
+      - name: Explain current scope
+        run: echo "Scaffold check only. Plugin and browser tests will be wired when the reviewed implementation is imported."
