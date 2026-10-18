@@ -1,6 +1,6 @@
-# Private installation
+# Installation and private transport
 
-Development preview. Review compatibility before enabling, and test the synthetic
+Community preview. Review compatibility before enabling, and test the synthetic
 demo before using any live browser. No live payment acceptance has been established.
 
 ## Runtime and configuration
@@ -14,7 +14,7 @@ Use the installed Hermes launcher's supported runtime, rather than assuming a
 
 ```sh
 hermes plugins doctor ~/.hermes/plugins/homelab-browser-handover --ci
-hermes plugins validate ~/.hermes/plugins/homelab-browser-handover
+hermes plugins validate ~/.hermes/plugins/homelab-browser-handover --install-deps
 ```
 
 The manifest declares `websockets>=13,<16`. Install dependencies through your

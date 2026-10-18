@@ -8,24 +8,45 @@ MIT, Copyright 2026 T3 Tools Inc. See third_party/NOTICE.md.
 import html
 import json
 
-# Colours follow Hermes's shared Nous preset; no external assets or font requests.
+# Default Nous skin from Hermes Agent d923a5eb (MIT, Nous Research; third_party/NOTICE.md).
+# Seeds: apps/shared/src/theme-presets.ts `nous`. Surface/text/fill formulas and
+# neutral knobs: apps/desktop/src/styles.css `:root`/`:root.dark` (--ui-bg-chrome,
+# --ui-bg-editor, --dt-popover, --ui-text-*, --ui-bg-quaternary,
+# --ui-control-hover-background, --ui-stroke-secondary, --shadow-md) with the
+# mixes from themes/context.tsx mixesFor(). Font stack: themes/presets.ts
+# SYSTEM_SANS. Buttons: components/ui/button.tsx (2.5px, 500 weight, lg type,
+# default/secondary/outline/destructive). Raw hex fallbacks cover engines without
+# color-mix(). Deliberate phone/accessibility exceptions: 40px minimum touch
+# height and narrower lg padding, a visible focus outline (the app removes all
+# rings), muted text uses --ui-text-secondary for small-text contrast, and hover
+# only applies to hover-capable pointers. No external assets or font requests.
 _STYLE = """
-:root{color-scheme:light dark;--bg:#fff;--fg:#1f2328;--panel:#f6f8fa;--muted:#656d76;--line:#d0d7de;--blue:#0053fd;--on-blue:#fff;--soft:#deeaff;--danger:#cf222e;--bar-height:82px}
-@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--panel:#161b22;--muted:#7d8590;--line:#30363d;--blue:#4a84fe;--on-blue:#161616;--soft:#1d2e4f;--danger:#f85149}}
-*{box-sizing:border-box}html,body{height:100%;margin:0;overflow:hidden;background:var(--bg);color:var(--fg);font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+:root{color-scheme:light dark;--seed-bg:#fff;--seed-fg:#1f2328;--seed-card:#f6f8fa;--seed-popover:#fff;--blue:#0053fd;--on-blue:#fff;--line:#d0d7de;--danger:#cf222e;--danger-bg:var(--danger);--neutral-chrome:#f3f3f3;--neutral-card:#fcfcfc;--mix-chrome:92%;--mix-card:22%;--mix-elevated:28%;
+--bg:#fff;--fg:#1f2328;--panel:#f6f8fa;--popover:#fff;--muted:#656d76;--soft:#f6f8fa;--hover:#eaeef2;--outline:#d0d7de;--blue-hover:var(--blue);--shadow-md:0 0 0 1px #d0d7de,0 4px 16px #0001;--bar-height:82px;
+--font:"Segoe WPC","Segoe UI",-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display",system-ui,sans-serif,"Apple Color Emoji","Segoe UI Emoji","Segoe UI Symbol","Noto Color Emoji",emoji}
+@media(prefers-color-scheme:dark){:root{--seed-bg:#0d1117;--seed-fg:#e6edf3;--seed-card:#010409;--seed-popover:#161b22;--blue:#4a84fe;--on-blue:#161616;--line:#30363d;--danger:#f85149;--danger-bg:#f8514999;--neutral-chrome:#0d0d0e;--neutral-card:#161618;--mix-chrome:74%;--mix-card:38%;--mix-elevated:46%;
+--bg:#0d1117;--fg:#e6edf3;--panel:#161b22;--popover:#161b22;--muted:#7d8590;--soft:#21262d;--hover:#292e36;--outline:#30363d;--shadow-md:0 0 0 1px #30363d,0 4px 16px #0004}}
+@supports(color:color-mix(in srgb,red 50%,blue)){:root{--bg:color-mix(in srgb,var(--seed-bg) var(--mix-chrome),var(--neutral-chrome));--panel:color-mix(in srgb,var(--seed-card) var(--mix-card),var(--neutral-card));
+--popover:color-mix(in srgb,color-mix(in srgb,var(--seed-popover) var(--mix-elevated),var(--neutral-card)) 96%,transparent);--fg:color-mix(in srgb,var(--seed-fg) 94%,transparent);--muted:color-mix(in srgb,var(--seed-fg) 74%,transparent);
+--soft:color-mix(in srgb,var(--blue) 5%,color-mix(in srgb,var(--seed-fg) 4%,transparent));--hover:color-mix(in srgb,var(--blue) 6%,color-mix(in srgb,var(--seed-fg) 4%,transparent));
+--outline:color-mix(in srgb,color-mix(in srgb,var(--blue) 16%,color-mix(in srgb,var(--seed-fg) 7%,transparent)) 50%,transparent);--blue-hover:color-mix(in srgb,var(--blue) 90%,transparent);
+--shadow-md:0 0 0 1px color-mix(in srgb,var(--fg) 8%,transparent),0 4px 16px color-mix(in srgb,#000 8%,transparent),0 16px 32px -24px color-mix(in srgb,#000 18%,transparent)}
+@media(prefers-color-scheme:dark){:root{--danger-bg:color-mix(in srgb,var(--danger) 60%,transparent)}}}
+*{box-sizing:border-box}html,body{height:100%;margin:0;overflow:hidden;background:var(--bg);color:var(--fg);font:13px/1.5 var(--font);-webkit-font-smoothing:antialiased}
 #bar{position:fixed;inset:0 0 auto;height:var(--bar-height);display:grid;grid-template-columns:1fr auto auto;grid-template-rows:20px 40px;align-content:center;align-items:center;gap:4px 8px;padding:0 10px;padding-top:env(safe-area-inset-top);box-sizing:content-box;background:var(--bg);border-bottom:1px solid var(--line);z-index:3}
 #bar .site{display:contents}#site{grid-column:1/-1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:600}#sub{grid-column:1;grid-row:2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #bar .site small{display:block;color:var(--muted);font-size:11px;font-weight:400;margin-top:3px}
-button{flex-shrink:0;border:1px solid transparent;border-radius:8px;padding:10px 11px;min-height:40px;font:600 13px -apple-system,system-ui,sans-serif;color:var(--on-blue);background:var(--blue);white-space:nowrap}
-button.release{background:var(--soft);color:var(--blue);border-color:var(--blue)}button:disabled{opacity:.45}button:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
-button.finish{background:var(--panel);color:var(--fg);border-color:var(--line)}button.finish.arm{background:var(--danger);color:#fff}button.finish[hidden]{display:none}
+button{flex-shrink:0;border:0;border-radius:2.5px;padding:8px 12px;min-height:40px;font:500 14px/20px var(--font);color:var(--on-blue);background:var(--blue);white-space:nowrap;cursor:pointer;box-shadow:none;transition:all .1s cubic-bezier(.4,0,.2,1)}
+button.release{background:var(--soft);color:var(--fg)}button.finish{background:transparent;color:var(--fg);box-shadow:inset 0 0 0 1px var(--outline)}button.finish.arm{background:var(--danger-bg);color:#fff;box-shadow:none}
+@media(hover:hover){button:hover{background:var(--blue-hover)}button.release:hover,button.finish:hover{background:var(--hover)}button.finish.arm:hover{background:var(--danger-bg)}}
+button:disabled{opacity:.5;pointer-events:none;cursor:default}button:focus-visible{outline:2px solid var(--blue);outline-offset:2px}button.finish[hidden]{display:none}
 #stage{position:fixed;left:0;right:0;top:calc(var(--bar-height) + 1px + env(safe-area-inset-top));bottom:0;overflow:hidden;background:var(--panel)}
 #fin{grid-column:2;grid-row:2}#ctl{grid-column:3;grid-row:2}
 @media(min-width:600px){:root{--bar-height:56px}#bar{display:flex}#bar .site{display:block;flex:1;min-width:0}#site{display:block}}
 canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
-#msg{position:fixed;left:12px;right:12px;bottom:calc(14px + env(safe-area-inset-bottom));background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13px;line-height:1.4;z-index:4;box-shadow:0 4px 16px #0001}
+#msg{position:fixed;left:12px;right:12px;bottom:calc(14px + env(safe-area-inset-bottom));background:var(--popover);color:var(--fg);border-radius:calc(.2 * .75rem);padding:10px 12px;font-size:13px;line-height:1.4;z-index:4;box-shadow:var(--shadow-md)}
 #msg:empty{display:none}textarea{position:fixed;left:0;top:0;width:1px;height:1px;padding:0;margin:-1px;border:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;font-size:16px}
-.border-you #sub{color:var(--blue)}.finished{padding:32px 20px}.border-you #stage{outline:2px solid var(--blue);outline-offset:-2px}
+body.border-you #bar #sub{color:var(--blue)}.finished{padding:32px 20px}.border-you #stage{outline:2px solid var(--blue);outline-offset:-2px}
 """
 
 _SCRIPT = r"""

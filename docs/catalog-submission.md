@@ -1,9 +1,9 @@
 # Preparing for the Hermes plugin catalogue
 
-The plugin is not submitted or approved. The repository stays private during
-initial development and phone testing.
+The community plugin is not submitted to or approved by the Hermes catalogue.
+Public source publication is separate from catalogue admission.
 
-Before a future submission:
+Before a catalogue submission:
 
 - Finish the implementation and document actual install and test commands.
 - Verify the harmless-form flow on iPhone Safari and exercise failure paths.

@@ -1,44 +1,98 @@
 # Hermes Browser Handover
 
-A native Hermes plugin for handing the agent's prepared browser page to your phone.
-Open its private link in Safari, tap **Take control**, finish the task, then tap
-**Release control**. The agent gets the browser back, but the same link stays open:
-tap **Take control again** whenever you need the page, and tap **Finish session**
-(twice, to confirm) when the handover is really over. The existing browser session
-stays on the server; the viewer streams it at phone width with touch input and a
-keyboard bridge.
+Hand the agent's prepared browser page to your phone, finish the task yourself,
+then hand it back. The page stays in the same server browser session.
 
-Version **0.2.0**, development preview. Automated tests pass; real iPhone and live
-Hermes handover acceptance are still pending. This is not a payment processor and
-does not transfer cookies into Safari or promise native autofill/Apple Pay.
+**0.2.5 community preview.** Independently maintained, not an official Nous Research
+plugin or an approved Hermes catalogue entry. Tested with Hermes **v0.22.2** on Linux; other host platforms are unverified.
 
-## Setup
+## How it works
 
-See [installation](docs/installation.md) and the detailed
-[implementation, security model and test evidence](docs/implementation.md).
-Requires local Hermes browser tools, Chromium, the Bot Desktop lease API and an
-owner-authenticated Tailscale Serve route. Tested against Hermes v0.22.2. Private
-core adapters are version-bound and fail closed; they are not public API promises.
+1. Ask Hermes to prepare a page using its local browser tools.
+2. Hermes calls `homelab_browser_handover(page_origin, purpose[, browser_session, target_id])`.
+3. Open the private link on your phone with Tailscale connected. Tap **Take control**.
+4. Scroll, type and complete the task. **Release control** returns the browser to Hermes.
+5. The same link allows **Take control again**. Two-tap **Finish session** ends it.
 
-There are two tools:
+The second tool, `homelab_browser_handover_status(handover_id[, cancel])`, reports
+control, completed cycles and whether the agent may continue. Status must be
+rechecked immediately before each browser step. Named `browser_exec` sessions must
+supply their exact `browser_session`; a name alone cannot access another task's page.
 
-1. `homelab_browser_handover(page_origin, purpose[, target_id])` returns an owner-only link.
-2. `homelab_browser_handover_status(handover_id[, cancel])` reports control, completed
-   hand-back cycles, whether the owner may still take control again and whether the
-   agent may act right now (`agent_may_continue`, re-checked before each browser step).
+## Install
 
-Disconnects, expired authentication and restarts keep the human control fence.
-Only explicit handback resumes the agent, and only the owner's Finish session (or
-cancel/expiry while the agent holds) ends a link. Phone input and frames are not
-logged or returned to the model. The viewer exposes no general CDP or terminal API.
-Popups are announced but not followed; checkout flows opening a separate bank tab
-are not yet supported.
+See the complete [installation and recovery guide](docs/installation.md).
+
+```sh
+hermes plugins install thebrownproject/hermes-browser-handover --no-enable
+hermes plugins doctor ~/.hermes/plugins/homelab-browser-handover --ci
+hermes plugins validate ~/.hermes/plugins/homelab-browser-handover --install-deps
+```
+
+For a reproducible install, use `--ref` with the full 40-character commit from the
+release instead of following the repository's default branch. Read validation
+warnings, configure an owner-authenticated Tailscale Serve route, then enable only
+after the harmless demo works. Installing the plugin does not deploy networking.
+
+Requires Python compatible with your Hermes installation, local Chromium browser
+tools, Hermes's Bot Desktop lease and an HTTPS Tailscale Serve route. The listener
+binds loopback only. **Do not expose it publicly or use Tailscale Funnel.**
+
+## Security and compatibility disclosures
+
+- The viewer controls a logged-in browser. Treat its host and all local processes
+  that can access its loopback port as trusted. Serve supplies the exact owner
+  identity; a private URL alone is insufficient. Tailnet/device access matters.
+- Human takeover uses Hermes's native lease. Lost connections, expired viewer
+  authentication and restarts do not silently resume the agent. Only explicit
+  handback releases human control. Integrations using direct CDP must honour the
+  same lease; unrelated third-party tools are not automatically fenced by this plugin.
+- It registers tools and prompt guidance through the public plugin API, but its
+  browser binding and control-lease adapters use **undocumented Hermes internals**.
+  Validation warns about those imports. No core functions are patched or replaced.
+  Retest after every Hermes update. Other Hermes versions are not established.
+- It reads protected viewer metadata outside the repository, current-profile
+  browser/session registries and lease state. It persists handover metadata under
+  the active Hermes home. It does not open credential stores, wallet files or
+  browser cookie databases, and stores no typed values or streamed frames.
+- The first tool call starts a background loopback HTTP/WebSocket service. It
+  connects to the existing local browser's CDP endpoint. There is no telemetry,
+  external relay or self-updater. The optional demo starts its own temporary
+  Chromium process. Tailscale/SSH setup is outside the plugin.
+- Exactly one matching prepared page is required unless an exact eligible target
+  is supplied. Replaced, remote/cloud or unverified browser provenance refuses.
+  Take control foregrounds only the bound page after acquiring the native lease.
+- Popups are announced but not followed. Flows opening a separate bank tab are
+  unsupported. This streams a remote browser; it does not transfer cookies to
+  Safari, enable native Apple Pay, or provide a payment processor.
+- No card filling, payment submission or verification-code service is bundled.
+  Those are separate integrations. No successful real payment is claimed.
+
+Read [SECURITY.md](SECURITY.md) before using personal accounts.
+
+## Appearance and acceptance
+
+The compact viewer follows the installed Hermes default Nous theme's colour
+mixing and button styles in light/dark mode. Larger phone touch targets and visible
+keyboard focus are intentional accessibility differences. A user's custom Hermes
+skin is not automatically shared with the viewer. Browsers without CSS `color-mix()`
+use the raw palette fallback rather than the exact mixed surface colours.
+
+The owner reports improved real iPhone scrolling on 0.2.4. Automated Chrome/WebKit
+checks cover gestures, nested scrolling and repeat control; this is not a claim
+that every iPhone, merchant or authentication flow has been tested.
+
+## Screenshots
+
+Synthetic local demo, showing the plugin toolbar in light and dark mode.
+The streamed website retains its own styling. No real account or checkout data.
+
+<img src="docs/screenshots/handover-light.png" alt="Light theme phone handover toolbar and synthetic form" width="300"> <img src="docs/screenshots/handover-dark.png" alt="Dark theme phone handover toolbar and synthetic form" width="300">
 
 ## Development
 
-Python 3.12 is the local/CI baseline; the installed Hermes adapter was also smoke
-tested on its managed Python 3.14 runtime. `websockets` is the only third-party
-runtime dependency, declared in plugin.yaml. Development uses the tested version:
+Python3.12 is the core/CI test baseline; native adapters also run under Hermes's
+managed Python3.14. Runtime dependency: `websockets>=13,<16`.
 
 ```sh
 python3 -m venv .venv
@@ -48,84 +102,27 @@ cd tests
 ../.venv/bin/python -W ignore -m unittest test_units test_viewer test_browser_ui test_regressions -v
 ```
 
-The 65 core tests cover authentication, CSRF and tickets, ownership and expiry,
-concurrent creation, reconnect/restart, target binding, persistence failures,
-real browser input, viewport restoration, repeated take/release cycles with fresh
-lease epochs, Finish session from every state, terminal close delivery when the
-link is ended by another task, and the actual viewer JavaScript.
-They use temporary synthetic profiles, never a live Hermes profile. Viewer UI tests
-use separate phone/target browser processes, matching real use and avoiding full
-Chromium suppressing wheel input on a background target tab. CI runs these
-checks on Ubuntu 24.04 with its installed Chrome. Runtime adapters need the
-separate Hermes smoke check in the installation guide.
+The 65 core tests cover authentication, CSRF/tickets, exact target binding,
+ownership/expiry, reconnect/restart, persistence failures, actual viewer input,
+background-page and nested-panel scrolling, viewport restoration, repeated control
+and Finish. Synthetic profiles only. Phone and target use separate browser
+processes. Run the [native compatibility smoke](docs/installation.md) separately.
 
-For a synthetic phone demo, with a separate unused private Serve route:
+CI also runs WebKit light/dark acceptance with pinned playwright-core1.60.0.
+For a local optional run, install it and its WebKit browser, set `PLAYWRIGHT_CORE`
+to the package directory and run `python -m unittest test_webkit_ui` from tests.
+`HBH_SCREENSHOT_DIR` optionally saves synthetic images outside the source tree.
+The WebKit fixture uses synthetic DOM touch events and a loopback identity proxy;
+it does not establish physical-device or production identity acceptance by itself.
 
-```sh
-.venv/bin/python demo.py --chrome "$HBH_CHROME" \
-  --public-origin https://your-server.your-tailnet.ts.net:8444 \
-  --login '<owner Tailscale login>' --port 8791
-```
+A [synthetic demo](docs/installation.md) uses a separate temporary browser and
+lease. Never point acceptance tests at a real merchant, account or live profile.
 
-The script creates its own temporary browser and file lease, prints a link, stays
-up across repeated Take/Release cycles and cleans up on Finish session, expiry
-while the agent holds, an external hand back or Ctrl-C. It cannot reach a real profile.
-Do not use real personal or payment data in the demo.
+## Attribution and catalogue status
 
-## Status and attribution
+MIT licensed. Browser streaming/input techniques adapted from T3 Code retain its
+MIT licence. Theme rules adapted from Hermes retain Nous Research's MIT licence.
+See [third-party notices](third_party/NOTICE.md). No external fonts/assets are bundled.
 
-Private development repository. No public release or Hermes catalogue submission
-has been made. Publication requires iPhone acceptance and disclosure of internal
-API dependencies. See [catalogue checklist](docs/catalog-submission.md).
-
-MIT licensed. Viewer techniques adapted from T3 Code v0.1.0 retain their original
-[MIT licence and notice](third_party/NOTICE.md). See [security guidance](SECURITY.md).
-
-## Named browser sessions (0.2.1)
-
-When the page was prepared with named `browser_exec`, pass its exact name as
-`browser_session` to `homelab_browser_handover`, alongside the origin and optional
-exact target. Built-in sessions omit it. The adapter reads the existing named
-backend record and the current task's live supervisor, checks local lease-fenced
-provenance, verifies matching endpoints and rechecks epoch and registry identity.
-A session name alone does not authorize another task's browser. Missing, changed,
-cloud or unmatched supervision refuses; no fallback creates a replacement browser.
-
-The previous compatibility smoke covered built-in sessions only. Named-session
-regressions and a public-tool argument-wiring check now cover this boundary.
-
-Version0.2.2 accepts Hermes-generated opaque named-session keys in gateway profile
-scope. Those keys include the resolved profile-home path, not a short slug.
-Caller-supplied browser_session names remain strictly validated; task supervision,
-local provenance, registry identity and lease checks remain required.
-
-## Phone touch and UI (0.2.3)
-
-Mobile browsers use one native Touch Events path for finger input; pointer events
-continue to handle mouse/pen. This avoids double-delivery on browsers emitting
-both families. Touch listeners explicitly prevent browser panning while held and
-flush the final wheel delta when a pan ends. Root-page and nested-panel swipes
-are checked against actual remote scroll positions, with a no-accidental-click
-assertion. Physical iPhone acceptance remains separate from simulated events.
-
-Viewer colours follow the shared Hermes Nous light/dark preset. Normal instruction
-overlays are removed; only control status, errors and terminal states remain.
-Merchant origin gets a full-width row on phones; Finish retains two-tap protection.
-
-CI additionally runs WebKit light/dark acceptance with pinned playwright-core1.60.0.
-For a local optional run, install that package and its WebKit browser, set
-PLAYWRIGHT_CORE to its package directory and run `python -m unittest test_webkit_ui`.
-HBH_SCREENSHOT_DIR optionally saves synthetic screenshots outside the repository.
-The WebKit harness uses a loopback synthetic-identity proxy because extra HTTP
-headers are not copied to WebSocket upgrades; it never attaches to a live profile.
-
-## Background page activation (0.2.4)
-
-A separate phone browser plus another foreground tab in the target browser
-reproduces a genuine Chrome155 limitation: wheel input does not scroll the
-bound background page. After acquiring and persisting human control, Take control
-brings only the exact bound page to the front, checking the native lease before
-and after the awaited activation. No target substitution or automatic handback.
-The background-page/nested-panel regression fails before this fix and passes
-afterwards on full Chrome155. This is distinct from correcting the old two-tab
-phone/target fixture. Physical iPhone acceptance remains pending.
+Public source publication and [Hermes catalogue admission](docs/catalog-submission.md)
+are separate. This community preview is not catalogue-approved or security-audited.

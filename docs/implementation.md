@@ -1,13 +1,13 @@
 # Homelab Browser Handover
 
-Standalone native Hermes plugin, version 0.2.0, built 18/10/2026 against the
-installed Hermes v0.22.2 (`d923a5eb487a`) on VM101, revised the same day after
-the parent review (see "Review fixes" below) and extended with the repeat-control
-lifecycle (see "Repeat control and Finish session"). Not deployed yet. Source lives
-here; the install path is `~/.hermes/plugins/homelab-browser-handover`.
+Standalone native Hermes plugin, version0.2.5 community preview, tested against
+Hermes v0.22.2 (`d923a5eb487a`). See README.md for current installation, status and
+disclosures. Older version-specific sections below are dated development evidence,
+not a claim of the current deployed state. Runtime configuration and profiles
+remain outside this repository; install path is `~/.hermes/plugins/homelab-browser-handover`.
 
 The agent prepares a page in its own browser, then calls
-`homelab_browser_handover`. The tool returns a private link. Fraser opens it in
+`homelab_browser_handover`. The tool returns a private link. The owner opens it in
 Safari on his phone, sees the page streamed at phone width with **Finish session**
 and **Take control** at the top, takes control, finishes the page himself with the
 normal iPhone keyboard and scrolling, and taps **Release control**. The agent then
@@ -31,7 +31,7 @@ page is still the server's browser.
    foreign/ended session are refused. Only one active handover at a time.
 3. Send only the link in the conversation. The link id is not a secret: the page,
    the ticket API and the websocket all require the owner's Tailscale identity.
-4. Fraser opens the link, taps **Take control** (native Bot Desktop lease acquired,
+4. The owner opens the link, taps **Take control** (native Bot Desktop lease acquired,
    page resized to his screen, input accepted only from that connection), finishes,
    taps **Release control** (viewport restored, lease released, link kept open and
    its 20-minute window restarted). He may tap **Take control again** any number of
@@ -191,7 +191,7 @@ private Serve route). It never uses a Hermes profile wherever it runs.
 
 ## Repeat control and Finish session (0.2.0, 18/10/2026)
 
-Fraser found that 0.1.1 closed the link on Release control, so he could not take the
+The owner found that 0.1.1 closed the link on Release control, so he could not take the
 page back. 0.2.0 changes the lifecycle (handover.py, viewer.py, tool prompt):
 
 - `release` from a held state restores the prior viewport, releases input, releases
@@ -493,3 +493,28 @@ and after the awaited activation. No target substitution or automatic handback.
 The background-page/nested-panel regression fails before this fix and passes
 afterwards on full Chrome155. This is distinct from correcting the old two-tab
 phone/target fixture. Physical iPhone acceptance remains pending.
+
+## Default Nous component styling (0.2.5)
+
+Styling only; no input, lease, binding or Finish behaviour changed. `viewer.py`
+derives its tokens from Hermes Agent d923a5eb (MIT, Nous Research), not rounded
+hexes: `nous` seeds from apps/shared/src/theme-presets.ts, with the desktop
+styles.css formulas for chrome background (`--ui-bg-chrome`), stage card
+(`--ui-bg-editor`), toast (`--dt-popover`, `--shadow-md`), text
+(`--ui-text-primary`/`-secondary`), secondary fill (`--ui-bg-quaternary`), hover
+(`--ui-control-hover-background`) and outline ring (`--ui-stroke-secondary` at 50%),
+plus the per-mode knobs from themes/context.tsx `mixesFor()`. Buttons follow
+components/ui/button.tsx: Take control is `default` (primary, 90% on hover),
+Release is `secondary`, Finish is `outline`, armed Finish is `destructive` (60% in
+dark). All use 2.5px corners, 500 weight and lg 14px/20px type, 50% disabled
+opacity without pointer events. Font is the presets.ts `SYSTEM_SANS` stack; no
+font, icon or app asset is bundled or requested. Engines without `color-mix()`
+fall back to the raw Nous hexes.
+
+Deliberate exceptions for a phone page: 40px minimum touch height with 12px
+horizontal padding so both header buttons fit a 320px phone, a visible 2px focus
+outline (the desktop app removes every focus ring), muted text at
+`--ui-text-secondary` rather than `--ui-text-tertiary` for small-text contrast,
+hover rules only under `(hover:hover)` so taps do not leave sticky hover, and a
+16px hidden keyboard textarea to avoid Safari zoom. The companion code-entry page
+in the homelab payments plugin uses the same tokens with its own 46px buttons.

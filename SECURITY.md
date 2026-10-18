@@ -7,5 +7,5 @@ Do not put credentials, cookies, private handover links, personal data or paymen
 information in an issue. Use GitHub private vulnerability reporting when available;
 otherwise request a private reporting channel without posting exploit details.
 
-Only an unreleased development preview is currently available. No security audit,
+This is a community preview. No security audit,
 production readiness or supported payment integration is claimed.
