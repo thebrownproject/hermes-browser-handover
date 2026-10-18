@@ -125,15 +125,24 @@ class BrowserUITests(unittest.TestCase):
                 point = await self.probe.eval(
                     "(()=>{const e=document.getElementById('plate');e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();"
                     "return {x:r.x+r.width/2,y:r.y+r.height/2}})()", target)
-                rect = await phone.eval("(()=>{const r=document.getElementById('cv').getBoundingClientRect();return {x:r.x,y:r.y,w:r.width}})()")
-                await phone.touch_tap(rect["x"] + point["x"], rect["y"] + point["y"])
+                # Account for letterboxing rather than assuming a 1:1 canvas.
+                screen = await phone.eval("(()=>{const c=document.getElementById('cv'),r=c.getBoundingClientRect(),fit=Math.min(r.width/c.width,r.height/c.height);return {x:r.x+(r.width-c.width*fit)/2,y:r.y+(r.height-c.height*fit)/2,w:c.width*fit,h:c.height*fit}})()")
+                await phone.touch_tap(screen["x"] + point["x"] * screen["w"] / layout["w"],
+                                      screen["y"] + point["y"] * screen["h"] / layout["h"])
                 await phone.wait("document.activeElement && document.activeElement.id === 'kb'")
-                await asyncio.sleep(0.4)
-                self.assertEqual(await self.probe.eval("document.activeElement.id", target), "plate")
+                deadline = asyncio.get_running_loop().time() + 5
+                while await self.probe.eval("document.activeElement.id", target) != "plate":
+                    if asyncio.get_running_loop().time() >= deadline:
+                        actual = await self.probe.eval("({active:document.activeElement.id,w:innerWidth,h:innerHeight,scroll:scrollY})", target)
+                        raise AssertionError(f"Target field did not focus: {actual}; target point={point}; canvas={screen}")
+                    await asyncio.sleep(0.05)
                 # Soft keyboard: text lands in the hidden textarea and is forwarded
                 await phone.insert_text("ZZ")
-                await asyncio.sleep(0.5)
-                self.assertEqual(await self.probe.eval("document.getElementById('plate').value", target), "DEMO123ZZ")
+                deadline = asyncio.get_running_loop().time() + 5
+                while await self.probe.eval("document.getElementById('plate').value", target) != "DEMO123ZZ":
+                    if asyncio.get_running_loop().time() >= deadline:
+                        self.fail("Forwarded text did not reach the target field")
+                    await asyncio.sleep(0.05)
                 self.assertEqual(await phone.eval("document.getElementById('kb').value"), "​", "sentinel restored")
                 # Release from the real button
                 await phone.eval("document.getElementById('ctl').click()")

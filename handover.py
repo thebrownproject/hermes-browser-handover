@@ -567,12 +567,12 @@ class HandoverManager:
         if not link or link.ws is not ws:
             return
         record.viewer = None
-        if record.page:
-            await record.page.stop_screencast()
+        # Complete the held-state transition and input cleanup before telling the
+        # client it is closed. A status read after close must see the stable state.
+        await self._on_viewer_gone(record)
         log.info("handover=%s viewer=%s auth expired; socket closed, fence unchanged", record.id, link.id[:8])
         await link.send_json({"type": "closed", "reason": reason})
         await link.close(4401, reason)
-        await self._on_viewer_gone(record)
 
     async def _watch_control(self, record: Record, link: ViewerLink):
         """Heartbeat: a Desktop-pane takeover or external hand back with no phone input must still
