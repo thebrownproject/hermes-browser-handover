@@ -218,6 +218,18 @@ class Viewer:
             await self.recv(remaining)
         return self.frames
 
+    async def release(self):
+        """Ordinary hand back: the link stays open, the agent holds, the viewer sees the new state."""
+        await self.send({"type": "release"})
+        return await self.wait_for("state", predicate=lambda m: m["controller"] == "agent")
+
+    async def finish(self, expect="finished"):
+        """Explicit end of the handover; returns the closed message."""
+        await self.send({"type": "finish"})
+        closed = await self.wait_for("closed")
+        assert closed["reason"] == expect, closed
+        return closed
+
     async def close(self):
         if self.ws:
             await self.ws.close()

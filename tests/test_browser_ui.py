@@ -108,6 +108,8 @@ class BrowserUITests(unittest.TestCase):
                 self.assertEqual(await phone.eval("document.getElementById('sub').textContent"), "Finish the demo form")
                 self.assertEqual(await phone.eval("document.getElementById('ctl').textContent"), "Take control")
                 self.assertFalse(await phone.eval("document.getElementById('ctl').disabled"))
+                self.assertEqual(await phone.eval("document.getElementById('fin').textContent"), "Finish session")
+                self.assertFalse(await phone.eval("document.getElementById('fin').hidden || document.getElementById('fin').disabled"))
                 self.assertFalse(self.env.lease.get().human)
                 # Take control from the real button
                 await phone.eval("document.getElementById('ctl').click()")
@@ -144,11 +146,37 @@ class BrowserUITests(unittest.TestCase):
                         self.fail("Forwarded text did not reach the target field")
                     await asyncio.sleep(0.05)
                 self.assertEqual(await phone.eval("document.getElementById('kb').value"), "​", "sentinel restored")
-                # Release from the real button
+                # Release from the real button: handed back, link still open, button offers a repeat take
                 await phone.eval("document.getElementById('ctl').click()")
                 await phone.wait("document.getElementById('msg').textContent.indexOf('Handed back') >= 0")
                 self.assertFalse(self.env.lease.get().human)
                 self.assertEqual(await self.probe.eval("innerWidth", target), 1280)
+                await phone.wait("document.getElementById('ctl').textContent === 'Take control again' && !document.getElementById('ctl').disabled")
+                self.assertEqual((await phone.eval("window.__hbhView"))["cycles"], 1)
+                status = self.env.status(hid)
+                self.assertEqual((status["state"], status["agent_may_continue"], status["human_may_retake"]), ("viewing", True, True))
+                self.assertEqual(await phone.eval("window.__errors"), [])
+                # Take control again from the same page: fresh lease epoch, phone layout again
+                await phone.eval("document.getElementById('ctl').click()")
+                await phone.wait("document.body.classList.contains('border-you')")
+                self.assertEqual((self.env.lease.get().human, self.env.lease.get().epoch), (True, 3))
+                self.assertFalse(self.env.status(hid)["agent_may_continue"])
+                deadline = asyncio.get_running_loop().time() + 5
+                while (await self.probe.eval("innerWidth", target)) != PHONE["width"]:
+                    if asyncio.get_running_loop().time() >= deadline:
+                        self.fail("second take did not re-apply the phone viewport")
+                    await asyncio.sleep(0.05)
+                # Finish session while holding: first tap arms, second tap hands back and ends the link
+                await phone.eval("document.getElementById('fin').click()")
+                self.assertEqual(await phone.eval("document.getElementById('fin').textContent"), "Confirm finish")
+                self.assertTrue(await phone.eval("(()=>{const b=document.getElementById('bar').getBoundingClientRect();return ['ctl','fin'].every(id=>{const r=document.getElementById(id).getBoundingClientRect();return r.left>=b.left&&r.right<=b.right&&r.top>=b.top&&r.bottom<=b.bottom})})()"), "control buttons fit the phone header")
+                self.assertTrue(self.env.lease.get().human, "arming Finish must not change control")
+                await phone.eval("document.getElementById('fin').click()")
+                await phone.wait("document.getElementById('msg').textContent.indexOf('Session finished') >= 0")
+                self.assertFalse(self.env.lease.get().human)
+                self.assertEqual(self.env.lease.get().epoch, 4)
+                self.assertEqual(await self.probe.eval("innerWidth", target), 1280)
+                self.assertTrue(await phone.eval("document.getElementById('ctl').disabled && document.getElementById('fin').disabled"))
                 self.assertEqual(await phone.eval("window.__errors"), [])
                 # the page served to the phone carries no endpoint or identity material
                 html = await phone.eval("document.documentElement.outerHTML")
@@ -157,7 +185,9 @@ class BrowserUITests(unittest.TestCase):
             finally:
                 await phone.close()
         run(go())
-        self.assertEqual(self.env.status(hid)["state"], "returned")
+        status = self.env.status(hid)
+        self.assertEqual((status["state"], status["cycles"], status["viewport_restored"], status["released_by"]), ("finished", 2, True, "owner"))
+        self.assertTrue(status["agent_may_continue"])
 
     def test_phone_page_without_identity_is_refused(self):
         result = self.env.create()

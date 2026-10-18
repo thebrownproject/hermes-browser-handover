@@ -15,12 +15,15 @@ log = logging.getLogger("homelab_browser_handover")
 GUIDANCE = (
     "To let Fraser finish a page himself on his phone (details, choices, payment entry), prepare the exact page "
     "with the browser tools first, then call homelab_browser_handover with the page's exact origin and a short "
-    "plain-language purpose. Send only the returned link in the conversation; say he will see Take control and "
-    "Release control at the top. While the handover is not returned, do not use browser tools, screenshots, "
-    "computer_use or payment tools on that browser: they are refused while he holds control. Poll "
-    "homelab_browser_handover_status sparingly, or wait for him to say he is done, then check status once and "
-    "continue only when agent_may_continue is true. Never describe the handover as a payment completion; confirm "
-    "outcomes on the page afterwards. Do not cancel a handover a human currently holds."
+    "plain-language purpose. Send only the returned link in the conversation; say he will see Take control, "
+    "Release control and Finish session at the top. While he holds control (status controller human, "
+    "agent_may_continue false), do not use browser tools, screenshots, computer_use or payment tools on that "
+    "browser: they are refused. Release control hands the page back but keeps the same link open: he can tap "
+    "Take control again at any time until he taps Finish session or the link expires. So treat "
+    "agent_may_continue as valid for one step only: check homelab_browser_handover_status immediately before "
+    "each browser action while the handover is not finished, and stop again as soon as it reports false. "
+    "Poll sparingly otherwise, or wait for him to say he is done. Never describe the handover as a payment "
+    "completion; confirm outcomes on the page afterwards. Do not cancel a handover a human currently holds."
 )
 
 _service = None
@@ -98,7 +101,9 @@ def register(ctx):
             service = _get_service()
             result = service.call(lambda m: m.create(task, args["page_origin"], args["purpose"], args.get("target_id")))
             result["instructions"] = ("Send the link to Fraser in this conversation. Wait until status reports "
-                                      "agent_may_continue before touching the browser again.")
+                                      "agent_may_continue true before touching the browser, and re-check it before "
+                                      "each later browser step: he can take control again on the same link until "
+                                      "he taps Finish session.")
             return json.dumps(result)
         except Refused as exc:
             return _refused(str(exc))
@@ -122,7 +127,8 @@ def register(ctx):
         schema={"name": "homelab_browser_handover",
                 "description": ("Hand the CURRENT prepared browser page to Fraser's phone through a private owner-only link. "
                                 "He takes control, finishes the page himself and explicitly releases control; browser, "
-                                "screenshot and payment tools are refused meanwhile. Does not navigate, fill or submit. "
+                                "screenshot and payment tools are refused meanwhile. The link stays open for repeat "
+                                "Take control until he taps Finish session. Does not navigate, fill or submit. "
                                 "Exactly one open page on page_origin is required."),
                 "parameters": {"type": "object", "properties": {
                     "page_origin": {"type": "string", "description": "Exact HTTPS origin of the prepared page, e.g. https://shop.example.com"},
@@ -132,9 +138,11 @@ def register(ctx):
     ctx.register_tool(
         name="homelab_browser_handover_status", toolset="homelab_browser_handover", emoji="📱", handler=status,
         schema={"name": "homelab_browser_handover_status",
-                "description": ("State of a phone handover: who controls the browser, whether the owner is connected and "
-                                "whether the agent may continue. Never returns page content. cancel=true only works while "
-                                "no human holds control."),
+                "description": ("State of a phone handover: who controls the browser, whether the owner is connected, "
+                                "how many times he has handed back (cycles), whether he may still take control again "
+                                "(human_may_retake) and whether the agent may act RIGHT NOW (agent_may_continue; re-check "
+                                "before each browser step). Never returns page content. cancel=true only works while no "
+                                "human holds control."),
                 "parameters": {"type": "object", "properties": {
                     "handover_id": {"type": "string"}, "cancel": {"type": "boolean"}},
                     "required": ["handover_id"], "additionalProperties": False}})

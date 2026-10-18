@@ -13,7 +13,9 @@ check the phone experience through the real transport before any live handover.
         --public-origin https://your-server.your-tailnet.ts.net:8444 \
         --login <tailnet login> --port 8791
 
-Prints the private link. Stop with Ctrl-C; the temporary browser and profile go.
+Prints the private link and stays up across repeated Take/Release cycles. It exits
+when the phone taps Finish session, when the link expires while the agent holds, on an
+external hand back, or on Ctrl-C; the temporary browser and profile go.
 """
 import argparse
 import json
@@ -119,8 +121,9 @@ def main(argv=None):
         while True:
             time.sleep(5)
             status = service.call(lambda m: m.status(result["handover_id"], "demo"))
-            print(json.dumps({k: status[k] for k in ("state", "controller", "human_connected", "viewport_restored")}), file=sys.stderr)
-            if status["state"] in ("returned", "cancelled", "expired", "failed"):
+            print(json.dumps({k: status.get(k) for k in ("state", "controller", "human_connected", "viewport_restored",
+                                                          "cycles", "agent_may_continue", "expires_in_seconds")}), file=sys.stderr)
+            if status["state"] in ("returned", "finished", "cancelled", "expired", "failed"):
                 break
     except KeyboardInterrupt:
         pass

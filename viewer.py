@@ -16,6 +16,8 @@ html,body{height:100%;margin:0;overflow:hidden;background:#0f1419;color:#e6edf3;
 #bar .site small{display:block;color:#8b949e;font-size:12px}
 button{border:0;border-radius:10px;padding:10px 14px;font-size:15px;font-weight:600;color:#fff;background:#1f6feb}
 button.release{background:#b62324}button:disabled{opacity:.45}
+button.finish{background:#30363d;color:#e6edf3;padding:10px 12px}button.finish.arm{background:#8957e5;color:#fff}
+button.finish[hidden]{display:none}
 #stage{position:fixed;left:0;right:0;top:calc(52px + env(safe-area-inset-top));bottom:0;overflow:hidden;background:#0f1419}
 canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 #msg{position:fixed;left:12px;right:12px;bottom:calc(14px + env(safe-area-inset-bottom));background:#161b22ee;border:1px solid #30363d;
@@ -29,13 +31,13 @@ _SCRIPT = r"""
 (function(){
   const cfg = window.__HBH__;
   const bar = document.getElementById('bar'), site = document.getElementById('site'), sub = document.getElementById('sub');
-  const btn = document.getElementById('ctl'), stage = document.getElementById('stage'), canvas = document.getElementById('cv');
+  const btn = document.getElementById('ctl'), fin = document.getElementById('fin'), stage = document.getElementById('stage'), canvas = document.getElementById('cv');
   const msg = document.getElementById('msg'), input = document.getElementById('kb');
   const ctx2d = canvas.getContext('2d');
   const SENTINEL = '\u200b', TAP_SLOP = 8, MULTI_MS = 500, MULTI_SLOP = 4, PROBE_PX = 24, PROBE_MS = 10000;
   let ws = null, state = null, controller = 'agent', viewport = null, size = null, cap = null, closedForGood = false;
   let retries = 0, resizeTimer = null, pendingWheel = null, wheelFrame = null, probe = null, probeCache = null;
-  let keySent = false, touch = null, lastTap = null, decoding = false, waiting = null;
+  let keySent = false, touch = null, lastTap = null, decoding = false, waiting = null, finArm = null;
   const show = t => { msg.textContent = t || ''; };
   const send = o => { if (ws && ws.readyState === 1) { ws.send(JSON.stringify(o)); return true; } return false; };
 
@@ -62,18 +64,28 @@ _SCRIPT = r"""
   const follow = () => { if (!vv) return; stage.style.top = (vv.offsetTop + bar.offsetHeight) + 'px'; stage.style.height = (vv.height - bar.offsetHeight) + 'px'; };
   if (vv) { vv.addEventListener('resize', follow); vv.addEventListener('scroll', follow); }
 
+  const HELD = ['human','human_disconnected','target_lost','superseded'];
   function render(){
-    window.__hbhView = {state: state ? state.state : null, controller: controller, pageAlive: state ? state.page_alive : null};
+    const st = state ? state.state : '', cycles = state && state.cycles ? state.cycles : 0;
+    const takeLabel = cycles > 0 ? 'Take control again' : 'Take control';
     document.body.classList.toggle('border-you', controller === 'you');
     site.textContent = state && state.origin ? state.origin.replace(/^https?:\/\//,'') : 'Hermes browser';
     sub.textContent = cfg.purpose;
-    const st = state ? state.state : '';
     if (controller === 'you') { btn.textContent = 'Release control'; btn.className = 'release'; btn.disabled = false;
-      show(st === 'target_lost' ? 'The page is no longer reachable. Release control when you are done.' : ''); }
-    else if (controller === 'other') { btn.textContent = 'Take control'; btn.disabled = true; show('Someone else is controlling this browser. Wait for them to hand back.'); }
-    else if (st === 'viewing' || st === 'prepared') { btn.textContent = 'Take control'; btn.className=''; btn.disabled = !(state && state.page_alive); show('Hermes prepared this page. Tap Take control to continue on your phone, then Release control when you are done.'); }
+      show(st === 'target_lost' ? 'The page is no longer reachable. Release control or Finish session when you are done.' : ''); }
+    else if (controller === 'other') { btn.textContent = takeLabel; btn.className = ''; btn.disabled = true; show('Someone else is controlling this browser. Wait for them to hand back.'); }
+    else if (st === 'viewing' || st === 'prepared') { btn.textContent = takeLabel; btn.className = ''; btn.disabled = !(state && state.page_alive);
+      show(cycles > 0 ? 'Handed back to Hermes. Tap Take control again if you need the page, or Finish session when you are done.'
+                      : 'Hermes prepared this page. Tap Take control to continue on your phone, then Release control when you are done.'); }
     else { btn.disabled = true; }
+    // Finish session: available while this page is active and nobody else holds the browser.
+    // Ending it while this handover holds hands back first; ending it while someone else holds is refused.
+    if (!finArm) { fin.textContent = 'Finish session'; fin.className = 'finish'; }
+    fin.hidden = closedForGood || !state;
+    fin.disabled = closedForGood || !state || (controller === 'other' && HELD.indexOf(st) >= 0);
     if (state && state.notices && state.notices.length && controller === 'you') show(state.notices[state.notices.length-1]);
+    window.__hbhView = {state: st || null, controller: controller, pageAlive: state ? state.page_alive : null, cycles: cycles,
+                        button: btn.textContent, finish: fin.hidden ? null : fin.textContent, finishDisabled: fin.disabled};
   }
   function onMessage(ev){
     if (ev.data instanceof ArrayBuffer) { paint(ev.data); return; }
@@ -85,11 +97,13 @@ _SCRIPT = r"""
     else if (m.type === 'notices') { if (state) state.notices = m.notices; render(); }
     else if (m.type === 'probe') { onProbe(m); }
     else if (m.type === 'error') { show(m.message); }
-    else if (m.type === 'closed') { closedForGood = true; controller = 'agent'; clearInput(); render();
-      show(m.reason === 'returned' ? 'Handed back to Hermes. You can close this page.' :
+    else if (m.type === 'closed') { closedForGood = true; controller = 'agent'; disarmFinish(); clearInput(); render();
+      show(m.reason === 'finished' ? 'Session finished. You can close this page.' :
+           m.reason === 'returned' ? 'Handed back to Hermes. This link is closed; ask Hermes for a new one if needed.' :
            m.reason === 'replaced' ? 'This page was opened somewhere else.' :
            m.reason === 'viewer_restarting' ? 'The viewer restarted. Reopen your link to continue.' :
-           'This handover has finished. Ask Hermes for a new link if needed.'); btn.disabled = true; }
+           m.reason === 'expired' ? 'This link expired. Ask Hermes for a new link if you still need the page.' :
+           'This handover has finished. Ask Hermes for a new link if needed.'); btn.disabled = true; fin.disabled = true; }
   }
   async function connect(){
     if (closedForGood) return;
@@ -111,7 +125,14 @@ _SCRIPT = r"""
       if (retries < 5) { retries++; show('Reconnecting…'); setTimeout(connect, 1200 * retries); }
       else show('Connection lost. Reload this page to continue; your control is kept until you release it.'); };
   }
-  btn.addEventListener('click', () => { if (controller === 'you') { btn.disabled = true; send({type:'release'}); } else send({type:'take'}); });
+  btn.addEventListener('click', () => { disarmFinish(); if (controller === 'you') { btn.disabled = true; send({type:'release'}); } else send({type:'take'}); });
+  // Finish is deliberate: a first tap arms it for a few seconds, a second tap sends it.
+  function disarmFinish(){ if (finArm) { clearTimeout(finArm); finArm = null; } fin.textContent = 'Finish session'; fin.className = 'finish'; }
+  fin.addEventListener('click', () => {
+    if (fin.disabled) return;
+    if (!finArm) { fin.textContent = 'Confirm finish'; fin.className = 'finish arm';
+      finArm = setTimeout(disarmFinish, 5000); render(); return; }
+    disarmFinish(); fin.disabled = true; send({type:'finish'}); });
 
   // ── input bridge (adapted from T3 Code, MIT) ─────────────────────────────
   function pagePoint(cx, cy, clamp){
@@ -217,7 +238,7 @@ def viewer_page(info: dict, csrf: str, nonce: str) -> str:
 <meta name="referrer" content="no-referrer"><title>Hermes browser</title>
 <style nonce="{nonce}">{_STYLE}</style></head>
 <body><div id="bar"><div class="site"><span id="site">Hermes browser</span><small id="sub">{html.escape(info['purpose'])}</small></div>
-<button id="ctl" disabled>Take control</button></div>
+<button id="fin" class="finish" hidden disabled>Finish session</button><button id="ctl" disabled>Take control</button></div>
 <div id="stage"><canvas id="cv" role="img" aria-label="Browser page"></canvas></div>
 <textarea id="kb" aria-label="Browser page input" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" disabled></textarea>
 <div id="msg"></div>
@@ -226,7 +247,8 @@ def viewer_page(info: dict, csrf: str, nonce: str) -> str:
 
 
 def finished_page(nonce: str, state: str | None) -> str:
-    text = {"returned": "This page was handed back to Hermes.", "cancelled": "Hermes cancelled this handover.",
+    text = {"returned": "This page was handed back to Hermes.", "finished": "This session was finished from the phone.",
+            "cancelled": "Hermes cancelled this handover.",
             "expired": "This link expired before it was used.", None: "This link is not active."}.get(state,
             "This handover has finished.")
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

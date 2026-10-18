@@ -18,5 +18,5 @@ A passing scaffold check is not plugin acceptance. Real merchant, account or
 payment tests require separate scope. Never deploy or change a running gateway
 as an incidental consequence of running tests.
 
-This repository contains the reviewed 0.1.1 implementation. Preserve other agents' active work. Homelab-specific deployment scripts live in the homelab project,
+This repository contains the reviewed 0.1.1 implementation plus the unreviewed 0.2.0 repeat-control lifecycle (release keeps the link, Finish session ends it). Preserve other agents' active work. Homelab-specific deployment scripts live in the homelab project,
 not this portable repository.

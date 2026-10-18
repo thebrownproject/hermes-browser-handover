@@ -131,11 +131,12 @@ class ChromiumSuite(unittest.TestCase):
             state = await again.wait_for("state")
             self.assertEqual((state["state"], state["controller"]), ("human", "you"))
             await again.wait_frames_since(0)
-            await again.send({"type": "release"})
-            self.assertEqual((await again.wait_for("closed"))["reason"], "returned")
+            self.assertEqual((await again.release())["state"], "viewing")
+            self.assertEqual(self.env.status(hid)["released_by"], "owner")
+            await again.finish()
         run(recover())
         self.assertFalse(self.env.lease.get().human)
-        self.assertEqual(self.env.status(hid)["released_by"], "owner")
+        self.assertEqual(self.env.status(hid)["state"], "finished")
 
     # ── 2. atomic reservation ────────────────────────────────────────────────
 
@@ -380,8 +381,8 @@ class ChromiumSuite(unittest.TestCase):
             await viewer.send({"type": "take"})
             state = await viewer.wait_for("state", predicate=lambda m: m["controller"] == "you")
             self.assertEqual(state["state"], "human")
-            await viewer.send({"type": "release"})
-            await viewer.wait_for("closed")
+            await viewer.release()
+            await viewer.finish()
         run(go())
         self.assertFalse(self.env.lease.get().human)
 

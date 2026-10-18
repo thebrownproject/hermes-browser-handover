@@ -3,14 +3,21 @@
 All state lives on one asyncio loop (owned by ``service.Service``). Tool handlers
 reach it through ``run_coroutine_threadsafe``. A record passes through:
 
-    prepared -> viewing -> human -> returned
-                      \\-> human_disconnected -> human (reconnect) -> returned
-                      \\-> target_lost (page gone while human holds) -> returned
+    prepared -> viewing -> human -> viewing (release) -> human (take again) ... -> finished
+                      \\-> human_disconnected -> human (reconnect) -> viewing/finished
+                      \\-> target_lost (page gone while human holds) -> returned on release
                       \\-> superseded (another viewer took the native lease)
 
+An ordinary ``release`` hands the native lease back to the agent and restores the
+viewport but keeps the record active (``viewing``/``prepared``) while the bound page
+is alive, so the owner can take control again on the same link; each cycle acquires
+a fresh lease epoch and renews the bounded link window. Only the explicit ``finish``
+action (owner) ends the handover (``finished``); ``returned`` is kept for hand backs
+that happened outside the viewer (Desktop pane) or after the page was lost.
+
 Nothing in here releases the native lease except an explicit, authenticated
-``release`` from the owner's connected viewer. Disconnects, expiry, plugin unload
-and errors keep the human fence in place.
+``release``/``finish`` from the owner's connected viewer. Disconnects, expiry,
+plugin unload and errors keep the human fence in place.
 """
 import asyncio
 import json
@@ -37,7 +44,7 @@ MAX_NOTICES = 5
 MAX_PURPOSE = 160
 ACTIVE_STATES = ("prepared", "viewing", "human", "human_disconnected", "target_lost", "superseded")
 HELD_STATES = ("human", "human_disconnected", "target_lost", "superseded")
-TERMINAL_STATES = ("returned", "cancelled", "expired", "failed")
+TERMINAL_STATES = ("returned", "finished", "cancelled", "expired", "failed")
 HANDOVER_ID_LEN = 12
 
 
@@ -92,6 +99,7 @@ class Record:
     viewport_restored: bool | None = None
     current_origin: str | None = None
     released_by: str | None = None
+    cycles: int = 0                # completed take -> release hand backs by the owner
     notices: list = field(default_factory=list)
     # runtime only
     conn: CDPConnection | None = None
@@ -102,7 +110,7 @@ class Record:
 
     PERSISTED = ("id", "task", "purpose", "origin", "target_id", "session_key", "connection_id", "cdp_endpoint",
                  "viewer_id", "state", "created", "since", "epoch", "prior_viewport", "viewport_restored",
-                 "current_origin", "released_by", "notices")
+                 "current_origin", "released_by", "cycles", "notices")
 
     def persisted(self) -> dict:
         return {name: getattr(self, name) for name in self.PERSISTED}
@@ -203,7 +211,10 @@ class HandoverManager:
 
     @staticmethod
     def our_control(record: Record, view) -> bool:
-        return view.human and view.viewer_id == record.viewer_id and (record.epoch is None or view.epoch == record.epoch)
+        """This handover holds the native lease: holder, viewer id AND the epoch recorded at the
+        take of the current cycle must all match. A stale record from an earlier cycle never passes."""
+        return (view.human and view.viewer_id == record.viewer_id and record.epoch is not None
+                and view.epoch == record.epoch)
 
     def controller(self, record: Record, view) -> str:
         if not view.human:
@@ -315,13 +326,21 @@ class HandoverManager:
             self._housekeeper.cancel()
             self._housekeeper = None
         for record in list(self.records.values()):
-            if record.viewer:
-                await record.viewer.send_json({"type": "closed", "reason": "viewer_restarting"})
-                await record.viewer.close(1001, "viewer restarting")
-                record.viewer = None
-            if record.state == "human":
-                record.transition("human_disconnected", self.clock)
-            await self._drop_cdp(record)
+            try:
+                # Detach first so a viewer that closes concurrently cannot be touched twice; the
+                # session task then skips its own cleanup and the shutdown path owns it.
+                viewer, record.viewer = record.viewer, None
+                if viewer:
+                    await viewer.send_json({"type": "closed", "reason": "viewer_restarting"})
+                    await viewer.close(1001, "viewer restarting")
+                    await self._on_viewer_gone(record)        # human -> human_disconnected, input released
+                elif record.state == "human":
+                    record.transition("human_disconnected", self.clock)
+                await self._drop_cdp(record)
+            except Exception as exc:  # noqa: BLE001 - shutdown must finish; type only
+                log.warning("handover=%s unload cleanup failed (%s)", record.id, exc.__class__.__name__)
+                if record.state == "human":
+                    record.transition("human_disconnected", self.clock)
         self._persist_quiet()
 
     async def _drop_cdp(self, record: Record):
@@ -336,15 +355,17 @@ class HandoverManager:
             await conn.close()
 
     async def _finish(self, record: Record, state: str):
-        if record.viewer:
-            await record.viewer.send_json(await self._state_message(record))
-            await record.viewer.send_json({"type": "closed", "reason": state})
-            await record.viewer.close(1000, state)
-            record.viewer = None
-        await self._drop_cdp(record)
+        """Terminal transition. The state change and persistence come first, without an await, so
+        a tool status read that races the socket close never sees the pre-terminal state."""
         record.transition(state, self.clock)
         record.expires_at = None
         self._persist_quiet()
+        viewer, record.viewer = record.viewer, None
+        if viewer:
+            await viewer.send_json(await self._state_message(record))
+            await viewer.send_json({"type": "closed", "reason": state})
+            await viewer.close(1000, state)
+        await self._drop_cdp(record)
 
     # ── agent tools ──────────────────────────────────────────────────────────
 
@@ -446,6 +467,7 @@ class HandoverManager:
                 "connection_id": record.connection_id, "purpose": record.purpose,
                 "human_connected": record.viewer is not None, "since": record.since,
                 "viewport_restored": record.viewport_restored, "released_by": record.released_by,
+                "cycles": record.cycles, "human_may_retake": record.state in ("prepared", "viewing"),
                 "notices": list(record.notices), "page_alive": bool(record.page and not record.page.lost.is_set())}
         if record.expires_at and record.state in ("prepared", "viewing"):
             data["expires_in_seconds"] = max(0, int(record.expires_at - self.clock()))
@@ -470,7 +492,11 @@ class HandoverManager:
                 await self._finish(record, "cancelled")
         data = self.public(record)
         data["controller"] = "agent" if not view.human else ("human" if view.viewer_id == record.viewer_id else "human_other")
-        data["agent_may_continue"] = record.state in TERMINAL_STATES and not view.human
+        # True only while nobody holds the browser AND this handover is not holding: after the
+        # owner's release (link still open for a repeat take), after Finish, or after cancel/expiry.
+        # False before the first take (the agent is waiting for the owner) and whenever taken again.
+        data["agent_may_continue"] = (not view.human and record.state not in HELD_STATES
+                                      and (record.state in TERMINAL_STATES or record.cycles > 0))
         return data
 
     # ── viewer HTTP support ──────────────────────────────────────────────────
@@ -509,7 +535,8 @@ class HandoverManager:
                 viewport = None
         return {"type": "state", "state": record.state, "controller": self.controller(record, view),
                 "origin": record.current_origin or record.origin, "purpose": record.purpose,
-                "viewport": viewport, "notices": list(record.notices),
+                "viewport": viewport, "notices": list(record.notices), "cycles": record.cycles,
+                "released_by": record.released_by,
                 "page_alive": bool(record.page and not record.page.lost.is_set())}
 
     async def _ensure_page(self, record: Record) -> bool:
@@ -762,6 +789,9 @@ class HandoverManager:
         if kind == "release":
             await self._release(record, link)
             return
+        if kind == "finish":
+            await self._finish_request(record, link)
+            return
         if kind == "resize":
             self._remember_size(record, message)
             if record.state == "human" and self.our_control(record, await self.lease_view(fresh=True)):
@@ -854,19 +884,13 @@ class HandoverManager:
         await link.send_json(await self._state_message(record, acquired))
         await self._refresh_stream(record, link, acquired)
 
-    async def _release(self, record: Record, link: ViewerLink):
-        if record.viewer is not link or record.state not in ("human", "target_lost", "human_disconnected", "superseded"):
-            await link.send_json({"type": "error", "message": "You do not hold control."})
-            return
-        view = await self.lease_view(fresh=True)
-        if not view.human:
-            record.released_by = "external"
-            record.viewport_restored = False if record.viewport_restored is None else record.viewport_restored
-            await self._finish(record, "returned")
-            return
-        if view.viewer_id != record.viewer_id:
-            await link.send_json({"type": "error", "message": "Another viewer holds control; they must hand back."})
-            return
+    async def _hand_back(self, record: Record, link: ViewerLink) -> bool:
+        """Release THIS handover's native lease after restoring the page. Returns True when the
+        agent holds afterwards. Precondition (caller checked): the lease shows our viewer id.
+        On failure the held state and the fence are kept and the viewer is told."""
+        if not self.our_control(record, await self.lease_view(fresh=True)):
+            await link.send_json({"type": "error", "message": "Browser control changed; hand back from the current controller."})
+            return False
         restored = False
         if record.page and not record.page.lost.is_set():
             try:
@@ -877,12 +901,70 @@ class HandoverManager:
                 restored = False
         record.viewport_restored = restored
         self._invalidate_lease_cache()
+        # Layout restoration awaited CDP; never release a newer hold that appeared meanwhile.
+        if not self.our_control(record, await self.lease_view(fresh=True)):
+            record.viewport_restored = None
+            await link.send_json({"type": "error", "message": "Browser control changed; hand back from the current controller."})
+            return False
         released = await asyncio.to_thread(self.lease.release, record.viewer_id)
         self._lease_cache = (time.monotonic(), released)
         if released.human:
             # Still human: either the lease moved to someone else or the write failed. Keep the fence.
             record.viewport_restored = None
             await link.send_json({"type": "error", "message": "Hand back did not complete. Control is unchanged."})
-            return
+            return False
         record.released_by = "owner"
-        await self._finish(record, "returned")
+        record.epoch = None
+        record.cycles += 1
+        return True
+
+    async def _release(self, record: Record, link: ViewerLink):
+        """Ordinary hand back: the agent gets the browser back, the link stays usable for a repeat
+        take while the bound page is alive, and the bounded link window restarts."""
+        if record.viewer is not link or record.state not in HELD_STATES:
+            await link.send_json({"type": "error", "message": "You do not hold control."})
+            return
+        view = await self.lease_view(fresh=True)
+        if not view.human:
+            record.released_by = record.released_by or "external"
+            record.viewport_restored = False if record.viewport_restored is None else record.viewport_restored
+            await self._finish(record, "returned")
+            return
+        if view.viewer_id != record.viewer_id:
+            await link.send_json({"type": "error", "message": "Another viewer holds control; they must hand back."})
+            return
+        if not await self._hand_back(record, link):
+            return
+        if not (record.page and not record.page.lost.is_set()):
+            # The prepared page is gone: nothing is left to take again, so this ends the handover.
+            await self._finish(record, "returned")
+            return
+        record.expires_at = self.clock() + self.link_ttl
+        record.transition("viewing", self.clock)
+        self._persist_quiet()          # no longer held: the record leaves the state file
+        log.info("handover=%s released by owner; cycle=%d link renewed", record.id, record.cycles)
+        view = await self.lease_view(fresh=True)
+        if not await link.send_json(await self._state_message(record, view)):
+            return
+        await self._refresh_stream(record, link, view)
+
+    async def _finish_request(self, record: Record, link: ViewerLink):
+        """Explicit end of this handover by the owner. While this handover holds, hand back first and
+        end only if that succeeded. While the agent holds, just close. Never touches another
+        controller's lease: if someone else holds, finishing our held record is refused."""
+        if record.viewer is not link or record.state not in ACTIVE_STATES:
+            return
+        view = await self.lease_view(fresh=True)
+        if record.state in HELD_STATES:
+            if not view.human:
+                record.released_by = record.released_by or "external"
+                record.viewport_restored = False if record.viewport_restored is None else record.viewport_restored
+                await self._finish(record, "returned")
+                return
+            if view.viewer_id != record.viewer_id:
+                await link.send_json({"type": "error", "message": "Another viewer holds control; they must hand back."})
+                return
+            if not await self._hand_back(record, link):
+                return                     # fence kept; the session is not ended on a failed hand back
+        log.info("handover=%s finished by owner after %d cycle(s)", record.id, record.cycles)
+        await self._finish(record, "finished")

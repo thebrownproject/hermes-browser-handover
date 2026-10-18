@@ -80,14 +80,16 @@ refresh tools. Enabling this plugin does not itself deploy its transport.
 
 Prepare a harmless page with the built-in local browser tools and use the two
 handover tools as described in README.md. Verify exact target continuity, phone
-keyboard/touch, responsive layout and explicit release before any real checkout.
+keyboard/touch, responsive layout, release followed by Take control again on the
+same link, and Finish session before any real checkout.
 
 Homelab Payments 0.3.5 has an unfenced direct CDP path. If that plugin is installed,
 upgrade it to a verified lease-fenced version before live handover. This repository
 does not bundle or upgrade the payment plugin. Secure approval requirements remain.
 
-For rollback, explicitly hand back any human-held lease, disable this plugin,
-reload when idle and stop only its own listener/forward and Serve route. Do not
+For rollback, explicitly hand back any human-held lease (Release control or Finish
+session on the phone, or the Desktop pane), disable this plugin, reload when idle
+and stop only its own listener/forward and Serve route. Do not
 remove or rewrite lease state to force the agent to continue. A lost phone
 connection alone must never resume automation. Restore the previous plugin copy
 if needed; leave unrelated routes, authentication and profiles untouched.

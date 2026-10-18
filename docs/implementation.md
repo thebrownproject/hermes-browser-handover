@@ -1,16 +1,19 @@
 # Homelab Browser Handover
 
-Standalone native Hermes plugin, version 0.1.1, built 18/10/2026 against the
-installed Hermes v0.22.2 (`d923a5eb487a`) on VM101 and revised the same day after
-the parent review (see "Review fixes" below). Not deployed yet. Source lives here;
-the install path is `~/.hermes/plugins/homelab-browser-handover`.
+Standalone native Hermes plugin, version 0.2.0, built 18/10/2026 against the
+installed Hermes v0.22.2 (`d923a5eb487a`) on VM101, revised the same day after
+the parent review (see "Review fixes" below) and extended with the repeat-control
+lifecycle (see "Repeat control and Finish session"). Not deployed yet. Source lives
+here; the install path is `~/.hermes/plugins/homelab-browser-handover`.
 
 The agent prepares a page in its own browser, then calls
 `homelab_browser_handover`. The tool returns a private link. Fraser opens it in
-Safari on his phone, sees the page streamed at phone width with **Take control**
-and **Release control** at the top, finishes the page himself with the normal
-iPhone keyboard and scrolling, and taps Release control. The agent then checks
-`homelab_browser_handover_status` and continues on the same page.
+Safari on his phone, sees the page streamed at phone width with **Finish session**
+and **Take control** at the top, takes control, finishes the page himself with the
+normal iPhone keyboard and scrolling, and taps **Release control**. The agent then
+checks `homelab_browser_handover_status` and continues on the same page. The link
+stays open: the button becomes **Take control again**, and he can take and release
+as often as needed until he taps **Finish session**, which ends the handover.
 
 What it does not do: navigate, fill, submit, read page text, send messages, import
 the session into Safari's own cookie jar, or promise Apple Pay/autofill. A streamed
@@ -30,15 +33,25 @@ page is still the server's browser.
    the ticket API and the websocket all require the owner's Tailscale identity.
 4. Fraser opens the link, taps **Take control** (native Bot Desktop lease acquired,
    page resized to his screen, input accepted only from that connection), finishes,
-   taps **Release control** (viewport restored, lease released).
+   taps **Release control** (viewport restored, lease released, link kept open and
+   its 20-minute window restarted). He may tap **Take control again** any number of
+   times; each take acquires a fresh lease epoch. **Finish session** (tap twice)
+   ends the handover: while he holds it hands back first and ends only if that
+   succeeded.
 5. `homelab_browser_handover_status(handover_id)` → `state`, `controller`,
-   `human_connected`, `viewport_restored`, `released_by`, `agent_may_continue`.
-   Continue only when `agent_may_continue` is true. `cancel: true` is accepted only
+   `human_connected`, `viewport_restored`, `released_by`, `cycles`,
+   `human_may_retake`, `agent_may_continue`. `agent_may_continue` is true only while
+   nobody holds the browser and the record is not held: after a release (link still
+   open), after Finish, cancel or expiry. It is false before the first take and
+   whenever he has taken control again, so the agent re-checks it immediately before
+   each browser step until the state is terminal. `cancel: true` is accepted only
    while no human holds control.
 
-States: `prepared → viewing → human → returned`, with `human_disconnected`
-(phone dropped, fence kept), `target_lost` (page closed while held), `superseded`
-(another viewer took the native lease) and terminal `cancelled`/`expired`/`failed`.
+States: `prepared → viewing → human → viewing → human … → finished`, with
+`human_disconnected` (phone dropped, fence kept), `target_lost` (page closed while
+held; its release ends the handover as `returned`), `superseded` (another viewer
+took the native lease) and terminal `returned` (hand back outside the viewer),
+`finished` (owner's Finish session), `cancelled`, `expired`, `failed`.
 
 ## Security model
 
@@ -92,11 +105,22 @@ States: `prepared → viewing → human → returned`, with `human_disconnected`
   place an endpoint, viewer text or identity in the gateway log. Tool errors for
   those paths are fixed generic strings.
 - **Nothing silently returns control.** Disconnects, link expiry, service restart,
-  plugin unload/reload and page loss keep the human lease. Recovery is the owner
-  reopening the same link (identity re-checked) and tapping Release control, or
-  handing back from the Hermes Desktop Screen pane. Held records persist 0600 under
-  `<HERMES_HOME>/homelab-browser-handover/state.json` so a reload can resume them.
-  There is deliberately no timeout release.
+  plugin unload/reload, page loss and a failed hand back keep the human lease.
+  Recovery is the owner reopening the same link (identity re-checked) and tapping
+  Release control or Finish session, or handing back from the Hermes Desktop Screen
+  pane. Held records persist 0600 under
+  `<HERMES_HOME>/homelab-browser-handover/state.json` (including the cycle count and
+  the epoch of the current hold) so a reload can resume them. There is deliberately
+  no timeout release.
+- **Bounded link lifetime, never at the human's expense.** A link expires 20 minutes
+  after creation or after the most recent release, and only while the agent holds.
+  A held handover never expires; its window restarts when the owner releases. A
+  service restart while the agent holds between cycles drops the (unheld, unpersisted)
+  link: the agent prepares a new one. Only held records survive a restart.
+- **Finish never touches someone else's lease.** Finishing while this handover holds
+  releases only its own viewer id after restoring the page, and keeps the session if
+  the release did not take. Finishing while another controller holds a held record
+  is refused; finishing while the agent holds just closes the link.
 - **Frames go to the human only.** JPEG screencast frames stream transiently to the
   authenticated viewer while the agent holds (preview) or while this handover
   holds. They are never logged, persisted, recorded or returned to the model.
@@ -165,6 +189,47 @@ process. The demo is a script, not a module, so the VM101 launcher has no suppor
 way to run it; run it from VM102 (the parent's plan: T3's headless shell behind a
 private Serve route). It never uses a Hermes profile wherever it runs.
 
+## Repeat control and Finish session (0.2.0, 18/10/2026)
+
+Fraser found that 0.1.1 closed the link on Release control, so he could not take the
+page back. 0.2.0 changes the lifecycle (handover.py, viewer.py, tool prompt):
+
+- `release` from a held state restores the prior viewport, releases input, releases
+  this handover's native lease and, when the bound page is alive, returns the record
+  to `viewing` (viewer connected) or `prepared` (after a disconnect) with
+  `released_by: owner`, `cycles + 1`, `epoch: null` and a fresh 20-minute window.
+  The preview stream resumes. If the page is gone (`target_lost`) the release ends
+  the handover as `returned`, exactly as before.
+- `take` from `viewing` works again on the same open socket and after a reconnect.
+  Each take acquires the native lease afresh, records the new epoch and the current
+  layout, and persists the held record (fail closed as before). `our_control` now
+  requires holder, viewer id and the recorded epoch to match; a record whose epoch is
+  unset never counts as holding, so a stale cycle can never be mistaken for the
+  current one.
+- New viewer message `finish` (button **Finish session**, armed by a first tap for 5 s
+  and sent by a second). From a held state it performs the same hand back and ends
+  only if the lease was released (`finished`, `released_by: owner`, cycles counted).
+  From `viewing`/`prepared` it ends without touching the lease. If another controller
+  holds, both `release` and `finish` are refused with "Another viewer holds control".
+  An external hand back (Desktop pane) still ends the record as `returned`.
+- `_finish` performs the terminal transition and persistence before any socket
+  traffic, so a tool status read racing the close never sees the previous state.
+  `unload` detaches each viewer before awaiting on it, so a viewer closing during a
+  reload cannot be touched twice (previously an intermittent AttributeError on the
+  service thread during shutdown).
+- Status adds `cycles` and `human_may_retake`; `agent_may_continue` is defined
+  above. The tool prompt tells the agent to re-check status before each browser step
+  until the handover is finished, cancelled or expired.
+- The demo loop stays up across cycles and exits on `finished`, `returned`,
+  `cancelled`, `expired` or `failed`, printing `cycles`, `agent_may_continue` and
+  `expires_in_seconds` every 5 s.
+
+Compatibility: 0.1.1 state files restore (missing `cycles` defaults to 0; the epoch
+was always persisted for held records). The `returned` terminal state and the
+`closed` reasons `returned`/`replaced`/`viewer_restarting`/`session_expired` are
+unchanged; `finished` and `expired` reasons are new. Agents written for 0.1.1 that
+continue permanently after one `agent_may_continue: true` must be updated to re-check.
+
 ## Review fixes (0.1.1, 18/10/2026)
 
 Parent review findings and their fixes, each with a regression test in
@@ -196,7 +261,29 @@ Parent review findings and their fixes, each with a regression test in
    lease back if the record cannot be written; corrupt/malformed state refuses
    start. Private-import warnings are unchanged and honest.
 
-## Tests and results (18/10/2026, after review fixes)
+## Tests and results (18/10/2026, 0.2.0)
+
+Local (VM102, isolated venv with websockets 15.0.1, T3's chrome-headless-shell 154
+on a temp profile, temp file lease), same command as below: 52 tests pass (41 from
+0.1.1 with their release assertions updated to "release → state viewing, then finish
+→ closed finished", plus the 10-test `RepeatControlSuite` in `tests/test_viewer.py`):
+three take/release cycles on one socket with epochs 1..6, viewport restored and text
+typed in every cycle, input ignored between cycles, status flags per phase; release →
+disconnect → reconnect → take again → disconnect while held → reconnect → release →
+finish; finish while holding (lease released, viewport restored, nothing persisted);
+finish before any take (lease untouched, epoch 0); finish and release refused while
+another controller holds, then external hand back ends it as `returned`; another
+viewer taking between cycles blocks the retake until they hand back; a failed lease
+release keeps the hold for both release and finish, with input still working; the
+link window restarts on release, a hold never expires, and the renewed window expires
+while the agent holds (`closed: expired`, cycles kept); restart during a second cycle
+keeps the fence (epoch 3 and cycles 1 persisted) and the link stays usable afterwards;
+restart while the agent holds between cycles ends the link without touching the lease.
+The real-browser UI test now also drives Release → "Take control again" → take again
+(epoch 3, phone layout re-applied) → Finish session (two taps; the first does not
+change control) → both buttons disabled, lease epoch 4, viewport 1280.
+
+## Tests and results (18/10/2026, 0.1.1 review fixes)
 
 Local (VM102, isolated venv `~/.venvs/hbh` with websockets 15.0.1, T3's
 chrome-headless-shell 154 on a temp profile, temp file lease):
@@ -277,3 +364,15 @@ guards; `cdp.py` allowlisted CDP client; `viewer.py` phone page; `lease.py` nati
 and file lease adapters; `binding.py` session provenance; `config.py` metadata;
 `demo.py` standalone demo; `install/` scripts and tunnel unit; `tests/`;
 `third_party/` T3 licence and notice.
+
+### Parent follow-up review
+
+The original51-test implementation passed independently in82.467s. Parent added
+one real-browser stale-epoch regression: a new hold using the same internal viewer
+id must not be released or finished by an older record. It failed against the
+initial implementation (the socket closed finished) and passes after fresh epoch
+checks before cleanup and again after awaited viewport restoration. All52 tests
+pass locally in66.706s. The actual viewer UI suite also passes after shortening
+the armed Finish label to Confirm finish and asserting both buttons fit the phone
+header. Finished wording no longer promises the agent holds if another controller
+may be active. Native adapter files did not change; no live plugin deployment.

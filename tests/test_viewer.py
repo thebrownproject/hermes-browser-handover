@@ -214,19 +214,31 @@ class ViewerSuite(unittest.TestCase):
             await asyncio.sleep(0.2)
             self.assertEqual(await self.probe.eval("innerWidth", target), 360)
             await viewer.wait_frames_since(seen)
-            await viewer.send({"type": "release"})
-            closed = await viewer.wait_for("closed")
-            self.assertEqual(closed["reason"], "returned")
+            # Ordinary release: the agent gets the browser back but the link stays usable (0.2.0).
+            state = await viewer.release()
+            self.assertEqual((state["state"], state["cycles"], state["released_by"]), ("viewing", 1, "owner"))
             self.assertEqual(await self.probe.eval("({w:innerWidth,h:innerHeight})", target), before)
             self.assertFalse(self.env.lease.get().human)
             # edits made by the human are still on the page for the agent
             self.assertEqual(await self.probe.eval("document.getElementById('plate').value", target), "DEMO123Xé")
+            status = self.env.status(hid)
+            self.assertEqual((status["state"], status["controller"], status["viewport_restored"], status["released_by"]),
+                             ("viewing", "agent", True, "owner"))
+            self.assertTrue(status["agent_may_continue"])
+            self.assertTrue(status["human_may_retake"])
+            self.assertEqual(self.env.lease.get().epoch, 2)
+            # Explicit Finish ends the handover for good.
+            await viewer.finish()
         run(go())
         status = self.env.status(hid)
         self.assertEqual((status["state"], status["controller"], status["viewport_restored"], status["released_by"]),
-                         ("returned", "agent", True, "owner"))
+                         ("finished", "agent", True, "owner"))
         self.assertTrue(status["agent_may_continue"])
+        self.assertFalse(status["human_may_retake"])
         self.assertEqual(self.env.lease.get().epoch, 2)
+        self.assertIn(b"finished from the phone", self.env.http(f"/h/{hid}")["body"])
+        cookie = self.env.http(f"/h/{hid}")["cookie"]
+        self.assertEqual(self.env.http(f"/api/ticket/{hid}", cookie=cookie, headers={"X-HBH-CSRF": "x" * 43})["status"], 403)
 
     def test_viewer_input_is_ignored_before_take_and_in_view_only(self):
         result = self.prepared()
@@ -275,11 +287,13 @@ class ViewerSuite(unittest.TestCase):
             self.assertEqual((state["state"], state["controller"]), ("human", "you"))
             self.assertEqual(self.env.lease.get().epoch, 1)      # no extra transition
             await again.wait_frames_since(0)
-            await again.send({"type": "release"})
-            self.assertEqual((await again.wait_for("closed"))["reason"], "returned")
+            state = await again.release()
+            self.assertEqual(state["state"], "viewing")
             self.assertFalse(self.env.lease.get().human)
             self.assertEqual(await self.probe.eval("innerWidth", target), 1280)
+            await again.finish()
         run(go())
+        self.assertEqual(self.env.status(hid)["state"], "finished")
 
     def test_service_restart_keeps_fence_and_restores_record(self):
         result = self.prepared()
@@ -308,12 +322,14 @@ class ViewerSuite(unittest.TestCase):
             state = await again.wait_for("state")
             self.assertEqual(state["controller"], "you")
             await again.wait_frames_since(0)
-            await again.send({"type": "release"})
-            self.assertEqual((await again.wait_for("closed"))["reason"], "returned")
+            self.assertEqual((await again.release())["state"], "viewing")
+            self.assertFalse(self.env.lease.get().human)
+            self.assertEqual(await self.probe.eval("innerWidth", target), 1280)
+            self.assertEqual(self.env.status(hid)["viewport_restored"], True)
+            await again.finish()
         run(finish())
         self.assertFalse(self.env.lease.get().human)
-        self.assertEqual(run(self.probe.eval("innerWidth", target)), 1280)
-        self.assertEqual(self.env.status(hid)["viewport_restored"], True)
+        self.assertEqual(self.env.status(hid)["state"], "finished")
 
     def test_second_viewer_replaces_first_and_stale_input_is_dropped(self):
         result = self.prepared()
@@ -334,8 +350,8 @@ class ViewerSuite(unittest.TestCase):
                 await first.send({"type": "text", "text": "STALE"})
             await asyncio.sleep(0.3)
             self.assertNotIn("STALE", await self.probe.eval("document.body.innerText", target))
-            await second.send({"type": "release"})
-            await second.wait_for("closed")
+            await second.release()
+            await second.finish()
         run(go())
 
     def test_external_lease_takeover_supersedes_viewer_mid_action(self):
@@ -412,8 +428,8 @@ class ViewerSuite(unittest.TestCase):
             cookie, csrf, ticket = self.env.session(hid)
             again = await Viewer(self.env, hid, cookie, ticket).connect()
             self.assertEqual((await again.wait_for("state"))["controller"], "you")
-            await again.send({"type": "release"})
-            await again.wait_for("closed")
+            await again.release()
+            await again.finish()
         run(go())
 
     def test_create_refusals(self):
@@ -460,8 +476,8 @@ class ViewerSuite(unittest.TestCase):
             self.env.call(lambda m: _expire_link(m, hid))
             self.assertEqual(self.env.status(hid)["state"], "human")
             self.assertTrue(self.env.lease.get().human)
-            await viewer.send({"type": "release"})
-            await viewer.wait_for("closed")
+            await viewer.release()
+            await viewer.finish()
         run(go())
 
     def test_logs_and_status_never_carry_frames_endpoints_or_identity(self):
@@ -471,8 +487,8 @@ class ViewerSuite(unittest.TestCase):
         async def go():
             viewer = await self.controlling(hid)
             await viewer.wait_frames_since(0)
-            await viewer.send({"type": "release"})
-            await viewer.wait_for("closed")
+            await viewer.release()
+            await viewer.finish()
         run(go())
         text = "\n".join(self.logs.lines)
         self.assertNotIn(self.env.ws_url, text)
@@ -483,6 +499,407 @@ class ViewerSuite(unittest.TestCase):
         self.assertNotIn(self.env.ws_url, status)
         self.assertNotIn("hbh:", status)
         self.assertNotIn("local-demo", status)         # no page path/URL, origin only
+
+
+class RepeatControlSuite(unittest.TestCase):
+    """0.2.0 lifecycle: Release control keeps the link open for a repeat take; Finish session ends it.
+    Every cycle acquires a fresh native lease epoch and is ownership-checked; the fence is never
+    released by expiry, disconnect, restart or a failed hand back."""
+
+    def setUp(self):
+        self.now = [time.time()]
+        self.env = Env(clock=lambda: self.now[0])
+        self.probe = CDPProbe(self.env.ws_url)
+
+    def tearDown(self):
+        self.env.close()
+
+    def prepared(self):
+        result = self.env.create()
+        self.assertTrue(result["success"])
+        return result
+
+    async def connected(self, hid):
+        cookie, csrf, ticket = self.env.session(hid)
+        viewer = await Viewer(self.env, hid, cookie, ticket).connect()
+        await viewer.wait_for("state")
+        await viewer.wait_frames(1)
+        return viewer
+
+    async def take(self, viewer, expect_epoch):
+        seen = viewer.frames
+        await viewer.send({"type": "take"})
+        state = await viewer.wait_for("state", predicate=lambda m: m["controller"] == "you")
+        self.assertEqual(state["state"], "human")
+        await viewer.wait_frames_since(seen)             # the phone layout repaint reaches the viewer
+        lease = self.env.lease.get()
+        self.assertEqual((lease.human, lease.epoch), (True, expect_epoch))
+        self.assertTrue(lease.viewer_id.startswith("hbh:"))
+        return state
+
+    async def type_into_plate(self, viewer, target, text):
+        point = await self.probe.eval(
+            "(()=>{const e=document.getElementById('plate');e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();"
+            "return {x:r.x+r.width/2,y:r.y+r.height/2}})()", target)
+        await viewer.send({"type": "probe", "x": point["x"], "y": point["y"]})
+        await viewer.wait_for("probe")
+        for action, buttons in (("move", 0), ("down", 1), ("up", 0)):
+            await viewer.send({"type": "mouse", "action": action, "x": point["x"], "y": point["y"],
+                               "button": "none" if action == "move" else "left", "buttons": buttons,
+                               "clickCount": 0 if action == "move" else 1, "modifiers": 0})
+        for action in ("down", "up"):
+            await viewer.send({"type": "key", "action": action, "key": "End", "code": "End", "keyCode": 35, "modifiers": 0})
+        await viewer.send({"type": "text", "text": text})
+        deadline = asyncio.get_running_loop().time() + 5
+        while text not in await self.probe.eval("document.getElementById('plate').value", target):
+            if asyncio.get_running_loop().time() >= deadline:
+                self.fail(f"text {text!r} did not reach the target")
+            await asyncio.sleep(0.05)
+
+    def record_epoch(self, hid):
+        return self.env.call(lambda m: _record_fields(m, hid))
+
+    # ── repeat cycles on one open viewer ─────────────────────────────────────
+
+    def test_repeat_take_release_on_same_viewer_uses_fresh_epochs_and_restores_each_time(self):
+        result = self.prepared()
+        hid, target = result["handover_id"], result["target_id"]
+        status = self.env.status(hid)
+        self.assertEqual((status["agent_may_continue"], status["cycles"], status["human_may_retake"]), (False, 0, True))
+
+        async def go():
+            viewer = await self.connected(hid)
+            before = await self.probe.eval("({w:innerWidth,h:innerHeight})", target)
+            for cycle in (1, 2, 3):
+                await self.take(viewer, expect_epoch=2 * cycle - 1)
+                fields = self.record_epoch(hid)
+                self.assertEqual((fields["state"], fields["epoch"], fields["cycles"]), ("human", 2 * cycle - 1, cycle - 1))
+                status = self.env.status(hid)
+                self.assertEqual((status["controller"], status["agent_may_continue"], status["human_may_retake"]),
+                                 ("human", False, False))
+                self.assertEqual(await self.probe.eval("innerWidth", target), 390)
+                await self.type_into_plate(viewer, target, f"C{cycle}")
+                seen = viewer.frames
+                state = await viewer.release()
+                self.assertEqual((state["state"], state["controller"], state["cycles"], state["released_by"]),
+                                 ("viewing", "agent", cycle, "owner"))
+                lease = self.env.lease.get()
+                self.assertEqual((lease.human, lease.epoch), (False, 2 * cycle))
+                self.assertEqual(await self.probe.eval("({w:innerWidth,h:innerHeight})", target), before)
+                fields = self.record_epoch(hid)
+                self.assertEqual((fields["state"], fields["epoch"], fields["cycles"], fields["viewport_restored"]),
+                                 ("viewing", None, cycle, True))
+                status = self.env.status(hid)
+                self.assertEqual((status["state"], status["controller"], status["agent_may_continue"],
+                                  status["human_may_retake"], status["cycles"]), ("viewing", "agent", True, True, cycle))
+                self.assertGreater(status["expires_in_seconds"], 0)
+                # the preview keeps streaming to the owner between cycles (the restored layout repaints)
+                await viewer.wait_frames_since(seen)
+                # input is ignored again until the next take
+                await viewer.send({"type": "text", "text": "IGNORED"})
+                await asyncio.sleep(0.3)
+                self.assertNotIn("IGNORED", await self.probe.eval("document.getElementById('plate').value", target))
+            self.assertEqual(await self.probe.eval("document.getElementById('plate').value", target), "DEMO123C1C2C3")
+            await viewer.finish()
+            self.assertEqual(self.env.lease.get().epoch, 6)
+        run(go())
+        status = self.env.status(hid)
+        self.assertEqual((status["state"], status["cycles"], status["agent_may_continue"], status["human_may_retake"],
+                          status["human_connected"]), ("finished", 3, True, False, False))
+        self.assertFalse(self.env.lease.get().human)
+        # a finished handover is terminal: a new one can be prepared, the old link is dead
+        self.assertEqual(self.env.call(lambda m: _page_info(m, hid))["active"], False)
+        self.assertTrue(self.prepared()["success"])
+
+    def test_release_then_disconnect_reconnect_and_take_again(self):
+        result = self.prepared()
+        hid, target = result["handover_id"], result["target_id"]
+
+        async def go():
+            viewer = await self.connected(hid)
+            await self.take(viewer, 1)
+            await viewer.release()
+            await viewer.ws.close()
+            await asyncio.sleep(0.4)
+            status = self.env.status(hid)
+            self.assertEqual((status["state"], status["human_connected"], status["agent_may_continue"], status["human_may_retake"]),
+                             ("prepared", False, True, True))
+            self.assertFalse(self.env.lease.get().human)
+            # the same link works again after a fresh identity-checked page visit
+            again = await self.connected(hid)
+            state = again.messages[0]
+            self.assertEqual((state["state"], state["controller"], state["cycles"]), ("viewing", "agent", 1))
+            await self.take(again, 3)
+            self.assertFalse(self.env.status(hid)["agent_may_continue"])
+            await self.type_into_plate(again, target, "R2")
+            # disconnect while holding: fence kept, then recovered on reconnect, then released and finished
+            await again.ws.close()
+            await asyncio.sleep(0.4)
+            self.assertTrue(self.env.lease.get().human)
+            self.assertEqual(self.env.status(hid)["state"], "human_disconnected")
+            third = await self.connected(hid)
+            self.assertEqual((third.messages[0]["state"], third.messages[0]["controller"]), ("human", "you"))
+            self.assertEqual(self.env.lease.get().epoch, 3, "reconnect never re-acquires")
+            state = await third.release()
+            self.assertEqual((state["state"], state["cycles"]), ("viewing", 2))
+            self.assertEqual(self.env.lease.get().epoch, 4)
+            await third.finish()
+        run(go())
+        self.assertEqual(self.env.status(hid)["state"], "finished")
+        self.assertEqual(run(self.probe.eval("document.getElementById('plate').value", target)), "DEMO123R2")
+
+    # ── finish paths ─────────────────────────────────────────────────────────
+
+    def test_finish_while_holding_hands_back_restores_viewport_and_ends(self):
+        result = self.prepared()
+        hid, target = result["handover_id"], result["target_id"]
+
+        async def go():
+            viewer = await self.connected(hid)
+            await self.take(viewer, 1)
+            self.assertEqual(await self.probe.eval("innerWidth", target), 390)
+            closed = await viewer.finish()
+            self.assertEqual(closed["reason"], "finished")
+            self.assertFalse(self.env.lease.get().human)
+            self.assertEqual(self.env.lease.get().epoch, 2)
+            self.assertEqual(await self.probe.eval("innerWidth", target), 1280)
+            await viewer.ws.wait_closed()
+        run(go())
+        status = self.env.status(hid)
+        self.assertEqual((status["state"], status["controller"], status["viewport_restored"], status["released_by"],
+                          status["cycles"], status["agent_may_continue"]), ("finished", "agent", True, "owner", 1, True))
+        self.assertFalse((self.env.tmp / "state" / "state.json").exists() and
+                         json.loads((self.env.tmp / "state" / "state.json").read_text())["records"], "nothing held")
+
+    def test_finish_while_agent_holds_and_before_any_take(self):
+        hid = self.prepared()["handover_id"]
+
+        async def go():
+            viewer = await self.connected(hid)
+            self.assertFalse(self.env.lease.get().human)
+            await viewer.finish()
+        run(go())
+        status = self.env.status(hid)
+        self.assertEqual((status["state"], status["cycles"], status["released_by"], status["agent_may_continue"]),
+                         ("finished", 0, None, True))
+        self.assertEqual(self.env.lease.get().epoch, 0, "finishing without a hold never touches the lease")
+
+    def test_finish_and_release_refuse_to_touch_another_controllers_lease(self):
+        result = self.prepared()
+        hid, target = result["handover_id"], result["target_id"]
+
+        async def go():
+            viewer = await self.connected(hid)
+            await self.take(viewer, 1)
+            self.env.lease.evict_with("desktop-viewer")                 # someone else now holds (epoch 2)
+            await viewer.send({"type": "finish"})
+            error = await viewer.wait_for("error")
+            self.assertIn("Another viewer", error["message"])
+            await viewer.send({"type": "release"})
+            error = await viewer.wait_for("error")
+            self.assertIn("Another viewer", error["message"])
+            lease = self.env.lease.get()
+            self.assertEqual((lease.human, lease.viewer_id, lease.epoch), (True, "desktop-viewer", 2))
+            status = self.env.status(hid)
+            self.assertEqual((status["state"], status["controller"], status["agent_may_continue"]), ("superseded", "human_other", False))
+            # the other controller hands back from the Desktop pane: this handover is over (external)
+            self.env.lease.release("desktop-viewer")
+            status = self.env.status(hid)
+            self.assertEqual((status["state"], status["released_by"], status["agent_may_continue"]), ("returned", "external", True))
+            closed = await viewer.wait_for("closed")
+            self.assertEqual(closed["reason"], "returned")
+        run(go())
+        # a stale record epoch from the first cycle never counts as ours even with our viewer id
+        from hbh.handover import HandoverManager
+        from hbh.lease import LeaseView
+        record = type("R", (), {"viewer_id": "hbh:x", "epoch": 1})()
+        self.assertFalse(HandoverManager.our_control(record, LeaseView("human", "hbh:x", 3)))
+        self.assertTrue(HandoverManager.our_control(record, LeaseView("human", "hbh:x", 1)))
+        record.epoch = None
+        self.assertFalse(HandoverManager.our_control(record, LeaseView("human", "hbh:x", 1)))
+
+    def test_stale_epoch_cannot_finish_or_release_a_new_hold_with_same_viewer_id(self):
+        hid = self.prepared()["handover_id"]
+
+        async def go():
+            viewer = await self.connected(hid)
+            await self.take(viewer, 1)
+            current = self.env.lease.get()
+            newer = self.env.lease.evict_with(current.viewer_id)
+            for action in ("finish", "release"):
+                await viewer.send({"type": action})
+                error = await viewer.wait_for("error")
+                self.assertIn("control changed", error["message"].lower())
+                lease = self.env.lease.get()
+                self.assertEqual((lease.human, lease.viewer_id, lease.epoch),
+                                 (True, newer.viewer_id, newer.epoch))
+                self.assertFalse(self.env.status(hid)["agent_may_continue"])
+            await viewer.close()
+        run(go())
+
+    def test_other_viewer_between_cycles_blocks_retake_until_they_hand_back(self):
+        result = self.prepared()
+        hid, target = result["handover_id"], result["target_id"]
+
+        async def go():
+            viewer = await self.connected(hid)
+            await self.take(viewer, 1)
+            await viewer.release()                                      # epoch 2, viewing
+            self.env.lease.evict_with("desktop-viewer")                 # epoch 3: someone else holds while we preview
+            state = await viewer.wait_for("state", timeout=4, predicate=lambda m: m["controller"] == "other")
+            self.assertEqual(state["state"], "viewing")
+            await viewer.send({"type": "take"})
+            self.assertIn("Someone else", (await viewer.wait_for("error"))["message"])
+            status = self.env.status(hid)
+            self.assertEqual((status["state"], status["controller"], status["agent_may_continue"]), ("viewing", "human_other", False))
+            self.env.lease.release("desktop-viewer")                    # epoch 4
+            await asyncio.sleep(1.3)                                    # heartbeat restarts the preview
+            self.assertTrue(self.env.status(hid)["agent_may_continue"])
+            await self.take(viewer, 5)
+            await self.type_into_plate(viewer, target, "OK")
+            await viewer.release()
+            self.assertEqual(self.env.lease.get().epoch, 6)
+            await viewer.finish()
+        run(go())
+        self.assertEqual(self.env.status(hid)["cycles"], 2)
+
+    def test_failed_hand_back_keeps_hold_for_release_and_finish(self):
+        result = self.prepared()
+        hid, target = result["handover_id"], result["target_id"]
+        lease = self.env.lease
+        real_release = lease.release
+
+        def failing_release(viewer_id):
+            return lease.get()                                           # write failed: still human
+
+        async def go():
+            viewer = await self.connected(hid)
+            await self.take(viewer, 1)
+            lease.release = failing_release
+            try:
+                for kind in ("release", "finish"):
+                    await viewer.send({"type": kind})
+                    error = await viewer.wait_for("error")
+                    self.assertIn("did not complete", error["message"])
+                    held = lease.get()
+                    self.assertEqual((held.human, held.epoch), (True, 1))
+                    status = self.env.status(hid)
+                    self.assertEqual((status["state"], status["controller"], status["agent_may_continue"], status["viewport_restored"]),
+                                     ("human", "human", False, None))
+                    self.assertIsNone(self.record_epoch(hid)["released_by"])
+                # input still works: the hold is real and the viewer is still attached
+                await self.type_into_plate(viewer, target, "HELD")
+            finally:
+                lease.release = real_release
+            state = await viewer.release()
+            self.assertEqual((state["state"], state["cycles"]), ("viewing", 1))
+            self.assertEqual(await self.probe.eval("innerWidth", target), 1280)
+            await viewer.finish()
+        run(go())
+        self.assertEqual(self.env.status(hid)["state"], "finished")
+
+    # ── bounded link lifetime across cycles ──────────────────────────────────
+
+    def test_link_window_renews_on_release_and_never_expires_a_hold(self):
+        from hbh.handover import LINK_TTL
+        result = self.prepared()
+        hid = result["handover_id"]
+        self.assertAlmostEqual(self.env.status(hid)["expires_in_seconds"], LINK_TTL, delta=2)
+
+        async def go():
+            viewer = await self.connected(hid)
+            await self.take(viewer, 1)
+            self.now[0] += LINK_TTL + 60                                 # well past the original window
+            self.env.call(lambda m: m.sweep())
+            self.assertEqual(self.env.status(hid)["state"], "human")
+            self.assertTrue(self.env.lease.get().human, "a held handover never expires")
+            self.assertNotIn("expires_in_seconds", self.env.status(hid))
+            state = await viewer.release()
+            self.assertEqual(state["state"], "viewing")
+            status = self.env.status(hid)
+            self.assertAlmostEqual(status["expires_in_seconds"], LINK_TTL, delta=2, msg="release restarts the window")
+            self.assertTrue(status["agent_may_continue"])
+            # second cycle, then let the renewed window lapse while the agent holds
+            await self.take(viewer, 3)
+            await viewer.release()
+            self.now[0] += LINK_TTL / 2
+            self.env.call(lambda m: m.sweep())
+            self.assertEqual(self.env.status(hid)["state"], "viewing")
+            self.now[0] += LINK_TTL / 2 + 5
+            self.env.call(lambda m: m.sweep())
+            closed = await viewer.wait_for("closed")
+            self.assertEqual(closed["reason"], "expired")
+        run(go())
+        status = self.env.status(hid)
+        self.assertEqual((status["state"], status["cycles"], status["agent_may_continue"], status["released_by"]),
+                         ("expired", 2, True, "owner"))
+        self.assertFalse(self.env.lease.get().human)
+        self.assertEqual(self.env.lease.get().epoch, 4)
+        self.assertIn(b"expired", self.env.http(f"/h/{hid}")["body"])
+
+    def test_restart_during_second_cycle_keeps_fence_and_link_recovers(self):
+        result = self.prepared()
+        hid, target = result["handover_id"], result["target_id"]
+
+        async def first():
+            viewer = await self.connected(hid)
+            await self.take(viewer, 1)
+            await viewer.release()
+            await self.take(viewer, 3)
+            return viewer
+        run(first())
+        self.env.restart_service()
+        self.assertTrue(self.env.lease.get().human)
+        persisted = json.loads((self.env.tmp / "state" / "state.json").read_text())["records"][0]
+        self.assertEqual((persisted["state"], persisted["epoch"], persisted["cycles"]), ("human_disconnected", 3, 1))
+        status = self.env.status(hid)
+        self.assertEqual((status["state"], status["controller"], status["cycles"], status["agent_may_continue"]),
+                         ("human_disconnected", "human", 1, False))
+
+        async def second():
+            again = await self.connected(hid)
+            self.assertEqual((again.messages[0]["state"], again.messages[0]["controller"], again.messages[0]["cycles"]),
+                             ("human", "you", 1))
+            self.assertEqual(self.env.lease.get().epoch, 3)
+            await self.type_into_plate(again, target, "AFTER")
+            state = await again.release()
+            self.assertEqual((state["state"], state["cycles"]), ("viewing", 2))
+            self.assertEqual(await self.probe.eval("innerWidth", target), 1280)
+            # the link is still usable after the restart and the release
+            await self.take(again, 5)
+            await again.release()
+            await again.finish()
+        run(second())
+        status = self.env.status(hid)
+        self.assertEqual((status["state"], status["cycles"], status["agent_may_continue"]), ("finished", 3, True))
+        self.assertEqual(self.env.lease.get().epoch, 6)
+
+    def test_restart_while_agent_holds_between_cycles_ends_the_link_without_touching_the_lease(self):
+        hid = self.prepared()["handover_id"]
+
+        async def go():
+            viewer = await self.connected(hid)
+            await self.take(viewer, 1)
+            await viewer.release()
+        run(go())
+        self.env.restart_service()
+        self.assertFalse(self.env.lease.get().human)
+        self.assertEqual(self.env.lease.get().epoch, 2)
+        from hbh.handover import Refused
+        with self.assertRaises(Refused):           # not held, so not persisted: the agent must prepare a new link
+            self.env.status(hid)
+        self.assertIn(b"not active", self.env.http(f"/h/{hid}")["body"])
+        self.assertTrue(self.prepared()["success"])
+
+
+async def _page_info(manager, hid):
+    return manager.page_info(hid)
+
+
+async def _record_fields(manager, hid):
+    record = manager.records[hid]
+    return {"state": record.state, "epoch": record.epoch, "cycles": record.cycles,
+            "viewport_restored": record.viewport_restored, "released_by": record.released_by}
 
 
 async def _expire_tickets(manager):
