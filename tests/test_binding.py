@@ -8,9 +8,9 @@ from hbh.binding import resolve_task_session, BindingRefused
 ENDPOINT='ws://127.0.0.1:9222/devtools/browser/synthetic'
 
 @contextmanager
-def named_runtime(*, foreign=False, shared=True, replaced=False, human=False, sidecar=False):
-    task='task'; key='bu-named-parking' + ('::local' if sidecar else '')
-    record={'owner_task_id':'bu-named-parking','session_key':key,'features':{'local':shared}}
+def named_runtime(*, foreign=False, shared=True, replaced=False, human=False, sidecar=False, profile=False):
+    task='task'; base='bu-named-parking' + ('@/tmp/synthetic-profile' if profile else ''); key=base + ('::local' if sidecar else '')
+    record={'owner_task_id':base,'session_key':key,'features':{'local':shared}}
     bt=types.ModuleType('tools.browser_tool')
     bt._active_sessions={key:record};bt._cleanup_lock=threading.Lock()
     bt._last_session_key=lambda task:task
@@ -27,8 +27,8 @@ def named_runtime(*, foreign=False, shared=True, replaced=False, human=False, si
     def run_fenced(session_info, fn):return fn()
     session.run_fenced=run_fenced
     bu=types.ModuleType('tools.browser_use_cli')
-    bu._backend_cache_key=lambda task_id,session_name='',sidecar=False:('bu-named-'+session_name)+('::local' if sidecar else '')
-    bu._exec_route_is_sidecar={'bu-named-parking':sidecar}
+    bu._backend_cache_key=lambda task_id,session_name='',sidecar=False:('bu-named-'+session_name)+('@/tmp/synthetic-profile' if profile else '')+('::local' if sidecar else '')
+    bu._exec_route_is_sidecar={base:sidecar}
     supervisor=types.SimpleNamespace(task_id=task,cdp_url=ENDPOINT if not foreign else ENDPOINT+'other',
         _active=True,_state_lock=threading.Lock(),_thread=types.SimpleNamespace(is_alive=lambda:True),
         _loop=types.SimpleNamespace(is_running=lambda:True),_page_session_id='page')
@@ -46,6 +46,12 @@ class NamedBindingTests(unittest.TestCase):
             b=resolve_task_session('task',lease=lease,browser_session='parking')
             self.assertEqual((b.session_key,b.cdp_endpoint,b.lease_epoch),('bu-named-parking',ENDPOINT,7))
             self.assertEqual(calls,['bu-named-parking'])
+    def test_gateway_profile_scoped_key_is_accepted(self):
+        with named_runtime(profile=True) as (lease,calls,_):
+            b=resolve_task_session('task',lease=lease,browser_session='parking')
+            self.assertEqual(b.session_key,'bu-named-parking@/tmp/synthetic-profile')
+            self.assertEqual(calls,[b.session_key])
+
     def test_foreign_supervisor_endpoint_is_refused(self):
         with named_runtime(foreign=True) as (lease,_,__):
             with self.assertRaisesRegex(BindingRefused,'supervision'):

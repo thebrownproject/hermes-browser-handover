@@ -48,7 +48,7 @@ cd tests
 ../.venv/bin/python -W ignore -m unittest test_units test_viewer test_browser_ui test_regressions -v
 ```
 
-The 62 tests cover authentication, CSRF and tickets, ownership and expiry,
+The 63 tests cover authentication, CSRF and tickets, ownership and expiry,
 concurrent creation, reconnect/restart, target binding, persistence failures,
 real browser input, viewport restoration, repeated take/release cycles with fresh
 lease epochs, Finish session from every state, terminal close delivery when the
@@ -91,3 +91,8 @@ cloud or unmatched supervision refuses; no fallback creates a replacement browse
 
 The previous compatibility smoke covered built-in sessions only. Named-session
 regressions and a public-tool argument-wiring check now cover this boundary.
+
+Version0.2.2 accepts Hermes-generated opaque named-session keys in gateway profile
+scope. Those keys include the resolved profile-home path, not a short slug.
+Caller-supplied browser_session names remain strictly validated; task supervision,
+local provenance, registry identity and lease checks remain required.

@@ -443,3 +443,20 @@ No raw endpoint input or browser creation fallback was added. These additional
 private APIs remain version-bound and are covered by installed-Hermes smoke.
 The eight new portable checks cover named success, sidecar, foreign/stopped
 supervision, replacement, cloud refusal, human hold and public-tool argument wiring.
+
+## Gateway profile key correction (0.2.2, 18/10/2026)
+
+The initial named-browser acceptance ran outside the gateway's explicit profile
+context. The gateway binds a home override even for the default profile; Hermes
+then appends `@<resolved home path>` to its backend key. The old short-slug regex
+rejected the path separators before registry lookup. A deterministic profile-scoped
+regression reproduces the exact malformed-key error on0.2.1.
+
+Named keys now remain opaque strings produced by Hermes's own backend-key helper,
+with a nonempty/type/size bound. The caller's session-name allowlist is unchanged.
+No new user-supplied key/path/endpoint exists; existing-record, task supervisor,
+local provenance and lease/identity checks still apply. Built-in key validation is
+unchanged. Installed-Hermes smoke now invokes the actual key producer in profile
+scope. Real isolated named browser_exec plus profile override passes through full
+manager.create and produces a synthetic handover link, then cleans up its own
+manager, daemon and screen. No real checkout or live profile is used.

@@ -1,5 +1,5 @@
 name: homelab-browser-handover
-version: 0.2.1
+version: 0.2.2
 description: Owner-only phone viewer that hands the agent's prepared browser page to the human and back.
 author: Fraser
 provides_tools:

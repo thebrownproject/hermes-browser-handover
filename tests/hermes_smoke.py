@@ -119,6 +119,14 @@ class BindingSmoke(unittest.TestCase):
             self.assertEqual(bound.cdp_endpoint, ENDPOINT)
             run.assert_called_once_with(key, "get", ["cdp-url"], timeout=10)
 
+    def test_gateway_profile_scoped_named_browser_binding(self):
+        from hermes_constants import hermes_home_key
+        # Gateway binds get_hermes_home_override during served-profile tool calls.
+        with patch("hermes_constants.get_hermes_home_override", return_value=Path(HOME)):
+            from tools import browser_use_cli as bu
+            self.assertIn("@" + hermes_home_key(), bu._backend_cache_key("smoke-task", "parking"))
+            self.test_named_browser_exec_task_supervisor_binding()
+
     def test_1_compat_surface_and_pinned_signatures(self):
         surface = compat_check()
         self.assertEqual(surface["_run_browser_command"], ["task_id", "command", "args", "timeout"])
