@@ -396,7 +396,7 @@ class HandoverManager:
     def _active(self) -> Record | None:
         return next((r for r in self.records.values() if r.state in ACTIVE_STATES), None)
 
-    async def create(self, task_id: str, page_origin: str, purpose: str, target_id: str | None = None) -> dict:
+    async def create(self, task_id: str, page_origin: str, purpose: str, target_id: str | None = None, browser_session: str | None = None) -> dict:
         origin = validate_origin(page_origin, allow_loopback_http=self.allow_loopback_http)
         purpose = validate_purpose(purpose)
         if target_id is not None and (not isinstance(target_id, str) or not 1 <= len(target_id) <= 128
@@ -412,16 +412,19 @@ class HandoverManager:
             raise Refused("Another handover is being prepared. Wait for it to finish or fail.")
         self._preparing = True
         try:
-            return await self._create_reserved(task, origin, purpose, target_id)
+            return await self._create_reserved(task, origin, purpose, target_id, browser_session)
         finally:
             self._preparing = False
 
-    async def _create_reserved(self, task: str, origin: str, purpose: str, target_id: str | None) -> dict:
+    async def _create_reserved(self, task: str, origin: str, purpose: str, target_id: str | None, browser_session: str | None) -> dict:
         before = await self.lease_view(fresh=True)
         if before.human:
             raise Refused("A human already holds control of the browser. Ask them to hand back first.")
         try:
-            binding = await asyncio.to_thread(self.resolver, task)
+            if browser_session is None:
+                binding = await asyncio.to_thread(self.resolver, task)
+            else:
+                binding = await asyncio.to_thread(self.resolver, task, browser_session)
         except Refused:
             raise
         except Exception as exc:  # noqa: BLE001 - message/type never reach the model or the log

@@ -430,3 +430,16 @@ pass locally in66.706s. The actual viewer UI suite also passes after shortening
 the armed Finish label to Confirm finish and asserting both buttons fit the phone
 header. Finished wording no longer promises the agent holds if another controller
 may be active. Native adapter files did not change; no live plugin deployment.
+
+## Named browser_exec binding (0.2.1, 18/10/2026)
+
+A real owner test reached checkout in a named harness session, while the old
+adapter looked up only `_last_session_key(task)`. The harness stores the managed
+backend under `_backend_cache_key(task, session_name, sidecar)` and attaches the
+actual caller's supervisor separately. Version0.2.1 adds explicit `browser_session`
+tool input and checks both records, local Bot Desktop sharing, matching live
+task-supervisor endpoint, unchanged native lease epoch and registry identity.
+No raw endpoint input or browser creation fallback was added. These additional
+private APIs remain version-bound and are covered by installed-Hermes smoke.
+The eight new portable checks cover named success, sidecar, foreign/stopped
+supervision, replacement, cloud refusal, human hold and public-tool argument wiring.

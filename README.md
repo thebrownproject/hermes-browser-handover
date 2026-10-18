@@ -48,7 +48,7 @@ cd tests
 ../.venv/bin/python -W ignore -m unittest test_units test_viewer test_browser_ui test_regressions -v
 ```
 
-The 54 tests cover authentication, CSRF and tickets, ownership and expiry,
+The 62 tests cover authentication, CSRF and tickets, ownership and expiry,
 concurrent creation, reconnect/restart, target binding, persistence failures,
 real browser input, viewport restoration, repeated take/release cycles with fresh
 lease epochs, Finish session from every state, terminal close delivery when the
@@ -78,3 +78,16 @@ API dependencies. See [catalogue checklist](docs/catalog-submission.md).
 
 MIT licensed. Viewer techniques adapted from T3 Code v0.1.0 retain their original
 [MIT licence and notice](third_party/NOTICE.md). See [security guidance](SECURITY.md).
+
+## Named browser sessions (0.2.1)
+
+When the page was prepared with named `browser_exec`, pass its exact name as
+`browser_session` to `homelab_browser_handover`, alongside the origin and optional
+exact target. Built-in sessions omit it. The adapter reads the existing named
+backend record and the current task's live supervisor, checks local lease-fenced
+provenance, verifies matching endpoints and rechecks epoch and registry identity.
+A session name alone does not authorize another task's browser. Missing, changed,
+cloud or unmatched supervision refuses; no fallback creates a replacement browser.
+
+The previous compatibility smoke covered built-in sessions only. Named-session
+regressions and a public-tool argument-wiring check now cover this boundary.

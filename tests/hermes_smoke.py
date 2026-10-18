@@ -90,6 +90,35 @@ class BindingSmoke(unittest.TestCase):
         self.native = NativeLease()
         self.assertFalse(self.native.get().human, "smoke lease must start with the agent holding")
 
+    def test_named_checkout_registry_reproduction(self):
+        # browser_exec stores its managed browser by name, not by calling task.
+        key = "bu-named-parking"
+        with patch.object(self.bt, "_active_sessions", {key: dict(RECORD, owner_task_id=key, session_key=key)}), \
+             patch.object(self.bt, "_last_active_session_key", {}), \
+             patch("tools.browser_tool_session._run_browser_command", autospec=True) as run:
+            with self.assertRaisesRegex(BindingRefused, "No prepared browser session exists for this task"):
+                resolve_task_session("smoke-task", lease=self.native)
+            run.assert_not_called()
+
+    def test_named_browser_exec_task_supervisor_binding(self):
+        from tools import browser_use_cli as bu
+        from types import SimpleNamespace
+        import threading
+        task, name = "smoke-task", "parking"
+        key = bu._backend_cache_key(task, name)
+        supervisor = SimpleNamespace(task_id=task, cdp_url=ENDPOINT, _state_lock=threading.Lock(),
+            _active=True, _page_session_id="page", _thread=SimpleNamespace(is_alive=lambda: True),
+            _loop=SimpleNamespace(is_running=lambda: True))
+        record = dict(RECORD, owner_task_id=self.bt._bare_task_id_for_session_key(key), session_key=key)
+        with patch.object(self.bt, "_active_sessions", {key: record}), \
+             patch("tools.browser_supervisor.SUPERVISOR_REGISTRY.get", return_value=supervisor), \
+             patch("tools.browser_tool_session._shares_bot_desktop_browser", return_value=True), \
+             patch("tools.browser_tool_session._run_browser_command", autospec=True, side_effect=_ok) as run:
+            bound = resolve_task_session(task, lease=self.native, browser_session=name)
+            self.assertEqual(bound.session_key, key)
+            self.assertEqual(bound.cdp_endpoint, ENDPOINT)
+            run.assert_called_once_with(key, "get", ["cdp-url"], timeout=10)
+
     def test_1_compat_surface_and_pinned_signatures(self):
         surface = compat_check()
         self.assertEqual(surface["_run_browser_command"], ["task_id", "command", "args", "timeout"])

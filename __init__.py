@@ -15,7 +15,7 @@ log = logging.getLogger("homelab_browser_handover")
 GUIDANCE = (
     "To let Fraser finish a page himself on his phone (details, choices, payment entry), prepare the exact page "
     "with the browser tools first, then call homelab_browser_handover with the page's exact origin and a short "
-    "plain-language purpose. Send only the returned link in the conversation; say he will see Take control, "
+    "plain-language purpose. When using named browser_exec, pass browser_session with that exact name. Send only the returned link in the conversation; say he will see Take control, "
     "Release control and Finish session at the top. While he holds control (status controller human, "
     "agent_may_continue false), do not use browser tools, screenshots, computer_use or payment tools on that "
     "browser: they are refused. Release control hands the page back but keeps the same link open: he can tap "
@@ -64,9 +64,9 @@ def _get_service_locked():
     except LeaseUnavailable as exc:
         raise Refused(f"Human-control lease adapter unavailable: {exc}") from None
 
-    def resolver(task_id):
+    def resolver(task_id, browser_session=None):
         try:
-            return resolve_task_session(task_id, lease=lease)
+            return resolve_task_session(task_id, lease=lease, browser_session=browser_session)
         except BindingRefused as exc:
             raise Refused(str(exc)) from None
     if cfg.state_dir:
@@ -99,7 +99,7 @@ def register(ctx):
         try:
             task = kwargs.get("task_id") or "default"
             service = _get_service()
-            result = service.call(lambda m: m.create(task, args["page_origin"], args["purpose"], args.get("target_id")))
+            result = service.call(lambda m: m.create(task, args["page_origin"], args["purpose"], args.get("target_id"), args.get("browser_session")))
             result["instructions"] = ("Send the link to Fraser in this conversation. Wait until status reports "
                                       "agent_may_continue true before touching the browser, and re-check it before "
                                       "each later browser step: he can take control again on the same link until "
@@ -133,6 +133,7 @@ def register(ctx):
                 "parameters": {"type": "object", "properties": {
                     "page_origin": {"type": "string", "description": "Exact HTTPS origin of the prepared page, e.g. https://shop.example.com"},
                     "purpose": {"type": "string", "description": "Short plain-language reason shown on the phone, max 160 characters."},
+                    "browser_session": {"type": "string", "description": "Exact existing browser_exec session name, required when the page was prepared in a named session."},
                     "target_id": {"type": "string", "description": "Optional exact browser target id (e.g. checkout_target_id from payment inspect)."}},
                     "required": ["page_origin", "purpose"], "additionalProperties": False}})
     ctx.register_tool(

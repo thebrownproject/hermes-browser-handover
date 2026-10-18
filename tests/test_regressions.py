@@ -652,3 +652,6 @@ async def _preparing(m):
 
 if __name__ == "__main__":
     unittest.main()
+
+# Named browser_exec binding must stay covered by the full regression command.
+from test_binding import NamedBindingTests, ToolWiringTests  # noqa: E402,F401
