@@ -1,0 +1,9 @@
+name: homelab-browser-handover
+version: 0.1.1
+description: Owner-only phone viewer that hands the agent's prepared browser page to the human and back.
+author: Fraser
+provides_tools:
+  - homelab_browser_handover
+  - homelab_browser_handover_status
+python_dependencies:
+  - "websockets>=13,<16"

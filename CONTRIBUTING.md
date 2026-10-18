@@ -15,4 +15,4 @@ Retain the T3 licence notice for adapted source and identify its source commit.
 Prefer supported Hermes hooks; disclose any internal dependency and the versions
 actually tested. Do not disable guards to satisfy compatibility checks.
 
-Installation and exact test commands will be documented with the implementation.
+See README.md for test commands and docs/installation.md for installation.

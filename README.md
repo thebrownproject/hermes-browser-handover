@@ -1,39 +1,71 @@
 # Hermes Browser Handover
 
-Prepare a page with Hermes Agent, open a private link on your phone, take control,
-and hand the same browser session back when you are finished.
+A native Hermes plugin for handing the agent's prepared browser page to your phone.
+Open its private link in Safari, tap **Take control**, finish the task, then tap
+**Release control**. The existing browser session stays on the server; the viewer
+streams it at phone width with touch input and a keyboard bridge.
 
-**Status: early development.** This repository currently contains project
-scaffolding. The plugin is being built and tested separately; no installable release,
-phone acceptance result or payment compatibility is claimed yet.
+Version **0.1.1**, development preview. Automated tests pass; real iPhone and live
+Hermes handover acceptance are still pending. This is not a payment processor and
+does not transfer cookies into Safari or promise native autofill/Apple Pay.
 
-## Intended experience
+## Setup
 
-- The agent prepares a page in its server-side browser.
-- You open an owner-only HTTPS link in Safari over your private network.
-- The page uses your phone's viewport, with touch and keyboard controls.
-- Take control pauses agent browser activity. Explicit handback returns control.
-- A dropped phone connection keeps agent access paused pending recovery.
+See [installation](docs/installation.md) and the detailed
+[implementation, security model and test evidence](docs/implementation.md).
+Requires local Hermes browser tools, Chromium, the Bot Desktop lease API and an
+owner-authenticated Tailscale Serve route. Tested against Hermes v0.22.2. Private
+core adapters are version-bound and fail closed; they are not public API promises.
 
-This is a remote view of the existing server browser. It does not import cookies
-into Safari's own browsing session or guarantee native wallet/autofill behaviour.
+There are two tools:
+
+1. `homelab_browser_handover(page_origin, purpose[, target_id])` returns an owner-only link.
+2. `homelab_browser_handover_status(handover_id[, cancel])` reports control and whether the agent may continue.
+
+Disconnects, expired authentication and restarts keep the human control fence.
+Only explicit handback resumes the agent. Phone input and frames are not logged
+or returned to the model. The viewer exposes no general CDP or terminal API.
+Popups are announced but not followed; checkout flows opening a separate bank tab
+are not yet supported.
 
 ## Development
 
-The first milestone is a harmless prefilled-form demonstration, followed by actual
-iPhone testing. Installation and test commands will be added with the reviewed
-plugin implementation. The initial CI workflow checks repository whitespace only;
-it is not evidence that browser, authentication or control tests have passed.
+Python 3.12 is the local/CI baseline; the installed Hermes adapter was also smoke
+tested on its managed Python 3.14 runtime. `websockets` is the only third-party
+runtime dependency, declared in plugin.yaml. Development uses the tested version:
 
-See [contribution guidelines](CONTRIBUTING.md) and the
-[catalogue preparation checklist](docs/catalog-submission.md).
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt
+export HBH_CHROME=/path/to/chrome
+cd tests
+../.venv/bin/python -W ignore -m unittest test_units test_viewer test_browser_ui test_regressions -v
+```
 
-## Acknowledgements and licence
+The 41 tests cover authentication, CSRF and tickets, ownership and expiry,
+concurrent creation, reconnect/restart, target binding, persistence failures,
+real browser input, viewport restoration and the actual viewer JavaScript.
+They use temporary synthetic profiles, never a live Hermes profile. CI runs these
+checks on Ubuntu 24.04 with its installed Chrome. Runtime adapters need the
+separate Hermes smoke check in the installation guide.
 
-The viewer design draws on [T3 Code](https://github.com/pingdotgg/t3code), including
-its mobile keyboard, viewport and streamed-browser input approach. Reused source
-will retain its original notices. This project is not affiliated with Nous Research
-or T3 Tools Inc.
+For a synthetic phone demo, with a separate unused private Serve route:
 
-Project code is MIT licensed; [third-party notices](third_party/NOTICE.md) apply to
-adapted components.
+```sh
+.venv/bin/python demo.py --chrome "$HBH_CHROME" \
+  --public-origin https://your-server.your-tailnet.ts.net:8444 \
+  --login '<owner Tailscale login>' --port 8791
+```
+
+The script creates its own temporary browser and file lease, prints a link and
+cleans up on explicit release, expiry or Ctrl-C. It cannot reach a real profile.
+Do not use real personal or payment data in the demo.
+
+## Status and attribution
+
+Private development repository. No public release or Hermes catalogue submission
+has been made. Publication requires iPhone acceptance and disclosure of internal
+API dependencies. See [catalogue checklist](docs/catalog-submission.md).
+
+MIT licensed. Viewer techniques adapted from T3 Code v0.1.0 retain their original
+[MIT licence and notice](third_party/NOTICE.md). See [security guidance](SECURITY.md).
