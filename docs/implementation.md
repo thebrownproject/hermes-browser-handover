@@ -482,3 +482,14 @@ makes the agent target backgrounded and suppresses wheel input. Separate phone
 and target browser processes reproduce production topology; the full five UI
 checks then pass on system Chrome155 and headless-shell154. No production CDP
 workaround or foreground-switch bypass was added.
+
+## Background page activation (0.2.4)
+
+A separate phone browser plus another foreground tab in the target browser
+reproduces a genuine Chrome155 limitation: wheel input does not scroll the
+bound background page. After acquiring and persisting human control, Take control
+brings only the exact bound page to the front, checking the native lease before
+and after the awaited activation. No target substitution or automatic handback.
+The background-page/nested-panel regression fails before this fix and passes
+afterwards on full Chrome155. This is distinct from correcting the old two-tab
+phone/target fixture. Physical iPhone acceptance remains pending.

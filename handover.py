@@ -917,6 +917,17 @@ class HandoverManager:
             await link.send_json({"type": "error", "message": "Control could not be taken: viewer state cannot be saved."})
             return
         try:
+            # Full Chromium suppresses wheel input on background tabs. Activate
+            # only this bound target, after acquiring and persisting its lease.
+            view = await self.lease_view(fresh=True)
+            if not self.our_control(record, view):
+                await self._lost_control(record, link, view)
+                return
+            await record.page.send("Page.bringToFront")
+            view = await self.lease_view(fresh=True)
+            if not self.our_control(record, view):
+                await self._lost_control(record, link, view)
+                return
             await self._apply_size(record)
         except (CDPError, TargetLost):
             await self._page_lost(record, link)

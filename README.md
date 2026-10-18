@@ -118,3 +118,14 @@ PLAYWRIGHT_CORE to its package directory and run `python -m unittest test_webkit
 HBH_SCREENSHOT_DIR optionally saves synthetic screenshots outside the repository.
 The WebKit harness uses a loopback synthetic-identity proxy because extra HTTP
 headers are not copied to WebSocket upgrades; it never attaches to a live profile.
+
+## Background page activation (0.2.4)
+
+A separate phone browser plus another foreground tab in the target browser
+reproduces a genuine Chrome155 limitation: wheel input does not scroll the
+bound background page. After acquiring and persisting human control, Take control
+brings only the exact bound page to the front, checking the native lease before
+and after the awaited activation. No target substitution or automatic handback.
+The background-page/nested-panel regression fails before this fix and passes
+afterwards on full Chrome155. This is distinct from correcting the old two-tab
+phone/target fixture. Physical iPhone acceptance remains pending.

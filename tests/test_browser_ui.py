@@ -194,10 +194,11 @@ class BrowserUITests(unittest.TestCase):
         self.assertEqual((status["state"], status["cycles"], status["viewport_restored"], status["released_by"]), ("finished", 2, True, "owner"))
         self.assertTrue(status["agent_may_continue"])
 
-    def test_phone_swipe_scrolls_page_and_nested_panel(self):
+    def test_phone_swipe_scrolls_background_page_and_nested_panel(self):
         result = self.env.create()
         target = result['target_id']
         async def go():
+            await self.probe.browser('Target.createTarget', {'url':'about:blank'})
             phone = PhoneTab(self.env)
             await phone.open('/h/' + result['handover_id'])
             try:
