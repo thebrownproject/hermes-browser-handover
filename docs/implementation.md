@@ -476,3 +476,9 @@ scroll/click; mouse/pen retain pointer handling. Final queued deltas flush on pa
 Light/dark colours follow installed Hermes shared/src/theme-presets.ts Nous palette
 and platform system fonts. Normal prose overlays were removed, with origin/status,
 errors and two-tap Finish retained. No external fonts/assets or security changes.
+
+Chrome155 also exposed a fixture topology error: using two tabs of one browser
+makes the agent target backgrounded and suppresses wheel input. Separate phone
+and target browser processes reproduce production topology; the full five UI
+checks then pass on system Chrome155 and headless-shell154. No production CDP
+workaround or foreground-switch bypass was added.

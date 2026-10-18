@@ -1,4 +1,4 @@
-"""Real viewer page in a real browser: a second tab of the temp Chromium plays the phone.
+"""Real viewer page in a separate temporary Chromium playing the phone.
 
 The phone tab gets the identity header through CDP Network.setExtraHTTPHeaders (what
 Tailscale Serve adds in production), loads /h/<id>, and the test drives the ACTUAL
@@ -10,7 +10,8 @@ import json
 import logging
 import unittest
 
-from support import LOGIN, CDPProbe, Env, run
+from support import LOGIN, CDPProbe, DEFAULT_CHROME, Env, run
+from hbh.demo import launch_chromium, stop_chromium
 from hbh.cdp import CDPConnection
 
 logging.getLogger("websockets").setLevel(logging.WARNING)
@@ -20,7 +21,10 @@ PHONE = {"width": 390, "height": 844}
 class PhoneTab:
     def __init__(self, env):
         self.env = env
-        self.conn = CDPConnection(env.ws_url)
+        # Phone and agent are separate browsers in production. Full Chromium
+        # suppresses scrolling in a background tab if both share one browser.
+        self.proc, phone_endpoint = launch_chromium(DEFAULT_CHROME, env.tmp / "phone-profile", "about:blank")
+        self.conn = CDPConnection(phone_endpoint)
         self.session = None
         self.target_id = None
 
@@ -72,6 +76,7 @@ class PhoneTab:
             await self.conn.send("Target.closeTarget", {"targetId": self.target_id})
         finally:
             await self.conn.close()
+            stop_chromium(self.proc)
 
 
 class BrowserUITests(unittest.TestCase):

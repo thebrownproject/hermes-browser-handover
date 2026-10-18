@@ -53,7 +53,9 @@ concurrent creation, reconnect/restart, target binding, persistence failures,
 real browser input, viewport restoration, repeated take/release cycles with fresh
 lease epochs, Finish session from every state, terminal close delivery when the
 link is ended by another task, and the actual viewer JavaScript.
-They use temporary synthetic profiles, never a live Hermes profile. CI runs these
+They use temporary synthetic profiles, never a live Hermes profile. Viewer UI tests
+use separate phone/target browser processes, matching real use and avoiding full
+Chromium suppressing wheel input on a background target tab. CI runs these
 checks on Ubuntu 24.04 with its installed Chrome. Runtime adapters need the
 separate Hermes smoke check in the installation guide.
 
